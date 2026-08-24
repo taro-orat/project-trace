@@ -85,7 +85,15 @@ TRACE_SCHEMA = {
 # 4. AI 调用
 # =========================
 
-def call_ai(memory):
+def call_ai(memory, creative_lock, must_avoid):
+
+    creative_lock_text = "\n".join(
+        f"- {item}" for item in creative_lock
+    ) or "- 无"
+
+    must_avoid_text = "\n".join(
+        f"- {item}" for item in must_avoid
+    ) or "- 无"
 
     prompt = f"""
 你是 Trace Generator，一个用于实验影像创作的 AI 分析工具。
@@ -94,17 +102,26 @@ def call_ai(memory):
 
 {memory}
 
+用户指定的 Creative Lock（必须保留的视觉元素）：
+{creative_lock_text}
+
+用户指定的 Must Avoid（绝对禁止出现的内容）：
+{must_avoid_text}
+
 要求：
 
 - emotion：概括这段记忆最核心的情绪
 - trace：指出消逝之后仍然留下的痕迹
-- scene：描述这一镜具体发生什么
-- visual：描述画面的视觉语言，包括色调、光线、空间、材质、构图和整体风格
+- scene：描述这一镜具体发生什么；必须遵守 Creative Lock，并让其中的每个视觉元素真实出现在画面描述中，不得忽略或替换；不得加入 Must Avoid 中的元素、视觉内容或概念
+- visual：描述画面的视觉语言，包括色调、光线、空间、材质、构图和整体风格；必须遵守 Creative Lock，并让其中的每个视觉元素真实出现在画面描述中，不得忽略或替换；不得加入 Must Avoid 中的元素、视觉内容或概念
 - movement：描述主体、环境或画面内部如何运动或变化
-- shot：给出可以实际执行的摄影机与镜头建议
+- shot：给出可以实际执行的摄影机与镜头建议；必须遵守 Creative Lock，确保这些元素在镜头中真实出现；不得加入 Must Avoid 中的元素、视觉内容或概念
 - sound：给出具体的声音设计方向
 - duration：给出这一镜建议时长和基本节奏
-- video_prompt：整合以上内容，生成一条可直接用于 AI 视频生成的英文 Prompt
+- video_prompt：整合以上内容，生成一条可直接用于 AI 视频生成的英文 Prompt；必须遵守 Creative Lock，确保每个元素真实出现在画面描述中，不得忽略或替换；不得加入 Must Avoid 中的元素、视觉内容或概念
+
+Creative Lock 只约束 scene、visual、shot、video_prompt 中的视觉内容。不要机械要求 emotion、trace、movement、sound、duration 等字段重复 Creative Lock 元素。
+Must Avoid 适用于 AI 生成结果中的所有相关视觉内容和概念。
 
 所有字段都要简洁、具体。
 每项控制在 1 到 2 句话。
@@ -216,6 +233,18 @@ def generate_trace():
         tk.END
     ).strip()
 
+    creative_lock = [
+        item.strip()
+        for item in creative_lock_text.get("1.0", tk.END).splitlines()
+        if item.strip()
+    ]
+
+    must_avoid = [
+        item.strip()
+        for item in must_avoid_text.get("1.0", tk.END).splitlines()
+        if item.strip()
+    ]
+
     if not memory:
         messagebox.showwarning(
             "提示",
@@ -230,7 +259,11 @@ def generate_trace():
 
     try:
 
-        result_text = call_ai(memory)
+        result_text = call_ai(
+            memory,
+            creative_lock,
+            must_avoid
+        )
 
         # 用户在成本警告里选择取消
         if result_text is None:
@@ -313,7 +346,20 @@ def generate_trace():
         ) as file:
 
             json.dump(
-                trace,
+                {
+                    "input": {
+                        "memory": memory,
+                        "creative_lock": {
+                            "source": "user",
+                            "items": creative_lock
+                        },
+                        "must_avoid": {
+                            "source": "user",
+                            "items": must_avoid
+                        }
+                    },
+                    "ai_output": trace
+                },
                 file,
                 ensure_ascii=False,
                 indent=4
@@ -385,6 +431,48 @@ memory_text = tk.Text(
 memory_text.pack(
     padx=20,
     pady=10
+)
+
+
+creative_lock_label = tk.Label(
+    root,
+    text="必须保留的元素（Creative Lock）："
+)
+
+creative_lock_label.pack()
+
+
+creative_lock_text = tk.Text(
+    root,
+    height=4,
+    width=75,
+    wrap="word"
+)
+
+creative_lock_text.pack(
+    padx=20,
+    pady=5
+)
+
+
+must_avoid_label = tk.Label(
+    root,
+    text="禁止出现的内容（Must Avoid）："
+)
+
+must_avoid_label.pack()
+
+
+must_avoid_text = tk.Text(
+    root,
+    height=4,
+    width=75,
+    wrap="word"
+)
+
+must_avoid_text.pack(
+    padx=20,
+    pady=5
 )
 
 
