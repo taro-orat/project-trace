@@ -1,3 +1,5 @@
 .DS_Store
 .env
 08-Code/02-projects/trace-generator/outputs/
+__pycache__/
+*.pyc
