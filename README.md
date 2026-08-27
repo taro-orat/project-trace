@@ -4,7 +4,7 @@ Project Trace is an ongoing creative research project exploring disappearance, m
 
 ## Current Stage
 
-Day 3
+Day 8
 
 ## Current Functions
 
