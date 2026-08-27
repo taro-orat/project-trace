@@ -1,0 +1,1 @@
+Day 9 failed v04 experiments. Attempts to rebuild Ambient → Imprint → Carry continuity broke the stable v03 shadow/carry/residual behavior. Preserved for research and technical reference; do not use as the production baseline.
