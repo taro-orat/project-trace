@@ -81,6 +81,19 @@ const LEAVING_HANDOFF_MICRO_MOTION_PX = 0.35;
 const AMBIENT_RECOVERY_DURATION_MS = 15000;
 const AMBIENT_RECOVERY_DELAY_MAX_MS = 2000;
 const DEBUG_AMBIENT_RECOVERY = false;
+const SHADOW_DEEPEN_DURATION_MS = 90000;
+const HUMAN_SHADOW_DEEP_COLOR = [125, 0, 25];
+const AI_SHADOW_DEEP_COLOR = [0, 40, 130];
+const SHADOW_FINAL_ALPHA_MULTIPLIER = 1.35;
+const SHADOW_FINAL_SIZE_MULTIPLIER = 1.10;
+const SHADOW_FINAL_VISUAL_WEIGHT = 1.25;
+const ACCUMULATION_MAX_LAYERS = 6;
+const ACCUMULATION_LAYER_ALPHA_RATIO = 0.32;
+const ACCUMULATION_MAX_EXTRUSION_PX = 14;
+const ACCUMULATION_LAYER_LATERAL_VARIATION_PX = 0.35;
+const ACCUMULATION_LAYER_ROTATION = 0.04;
+const THICKNESS_DIRECTION_X = 0.78;
+const THICKNESS_DIRECTION_Y = 0.62;
 
 let nextHumanSourceNumber = 1;
 let nextAISourceNumber = 1;
@@ -337,6 +350,340 @@ function getStableUnit(
 }
 
 
+function createAccumulationLayerDescriptors(
+  sourceId
+) {
+
+  let descriptors = [];
+
+  for (
+    let layerIndex = 0;
+    layerIndex < ACCUMULATION_MAX_LAYERS;
+    layerIndex++
+  ) {
+
+    descriptors.push({
+      revealStart:
+        0.06
+        +
+        layerIndex
+        *
+        0.14,
+      revealEnd:
+        0.24
+        +
+        layerIndex
+        *
+        0.16,
+      offsetX:
+        map(
+          getStableUnit(
+            sourceId + ":accumulation:" + layerIndex + ":x"
+          ),
+          0,
+          1,
+          -ACCUMULATION_LAYER_LATERAL_VARIATION_PX,
+          ACCUMULATION_LAYER_LATERAL_VARIATION_PX
+        ),
+      offsetY:
+        map(
+          getStableUnit(
+            sourceId + ":accumulation:" + layerIndex + ":y"
+          ),
+          0,
+          1,
+          -ACCUMULATION_LAYER_LATERAL_VARIATION_PX,
+          ACCUMULATION_LAYER_LATERAL_VARIATION_PX
+        ),
+      extrusion:
+        (
+          (layerIndex + 1)
+          /
+          ACCUMULATION_MAX_LAYERS
+        )
+        *
+        ACCUMULATION_MAX_EXTRUSION_PX,
+      rotation:
+        map(
+          getStableUnit(
+            sourceId + ":accumulation:" + layerIndex + ":rotation"
+          ),
+          0,
+          1,
+          -ACCUMULATION_LAYER_ROTATION,
+          ACCUMULATION_LAYER_ROTATION
+        ),
+      scale:
+        map(
+          getStableUnit(
+            sourceId + ":accumulation:" + layerIndex + ":scale"
+          ),
+          0,
+          1,
+          0.94,
+          1.06
+        ),
+      alphaRatio:
+        map(
+          getStableUnit(
+            sourceId + ":accumulation:" + layerIndex + ":alpha"
+          ),
+          0,
+          1,
+          0.85,
+          1.15
+        )
+    });
+  }
+
+  return descriptors;
+}
+
+
+function getAccumulationLayerReveal(
+  descriptor,
+  shadowDepth
+) {
+
+  let thicknessProgress =
+    getThicknessProgress(shadowDepth);
+
+  let revealRange =
+    descriptor.revealEnd
+    -
+    descriptor.revealStart;
+
+  let rawReveal =
+    (
+      thicknessProgress
+      -
+      descriptor.revealStart
+    )
+    /
+    revealRange;
+
+  let reveal = constrain(rawReveal, 0, 1);
+
+  return reveal * reveal * (3 - 2 * reveal);
+}
+
+
+function getThicknessProgress(
+  shadowDepth
+) {
+
+  let depth = constrain(shadowDepth, 0, 1);
+
+  if (depth <= 0.02) {
+    return map(depth, 0, 0.02, 0, 0.08);
+  }
+
+  if (depth <= 0.0625) {
+    return map(depth, 0.02, 0.0625, 0.08, 0.18);
+  }
+
+  if (depth <= 0.125) {
+    return map(depth, 0.0625, 0.125, 0.18, 0.32);
+  }
+
+  if (depth <= 0.25) {
+    return map(depth, 0.125, 0.25, 0.32, 0.50);
+  }
+
+  if (depth <= 0.50) {
+    return map(depth, 0.25, 0.50, 0.50, 0.68);
+  }
+
+  if (depth <= 0.75) {
+    return map(depth, 0.50, 0.75, 0.68, 0.84);
+  }
+
+  return map(depth, 0.75, 1, 0.84, 1);
+}
+
+
+function drawAccumulationLayers(
+  source,
+  sourceType,
+  position,
+  visual,
+  shadowDepth
+) {
+
+  if (
+    shadowDepth <= 0
+  ) {
+
+    return;
+  }
+
+  let descriptors =
+    sourceType === "human"
+      ? source.humanAccumulationLayers
+      : source.aiAccumulationLayers;
+
+  for (
+    let i = 0;
+    i < descriptors.length;
+    i++
+  ) {
+
+    let descriptor = descriptors[i];
+    let reveal = getAccumulationLayerReveal(
+      descriptor,
+      shadowDepth
+    );
+
+    if (
+      reveal <= 0
+    ) {
+
+      continue;
+    }
+
+    push();
+
+    translate(
+      position.x
+      +
+      descriptor.offsetX
+      +
+      descriptor.extrusion * THICKNESS_DIRECTION_X,
+      position.y
+      +
+      descriptor.offsetY
+      +
+      descriptor.extrusion * THICKNESS_DIRECTION_Y
+    );
+
+    rotate(descriptor.rotation);
+
+    fill(
+      visual.color[0],
+      visual.color[1],
+      visual.color[2],
+      visual.alpha
+      *
+      ACCUMULATION_LAYER_ALPHA_RATIO
+      *
+      descriptor.alphaRatio
+      *
+      reveal
+    );
+
+    rect(
+      0,
+      0,
+      source.w * visual.sizeMultiplier * descriptor.scale,
+      source.h * visual.sizeMultiplier * descriptor.scale
+    );
+
+    pop();
+  }
+}
+
+
+function getVisibleAccumulationLayerStates(
+  source,
+  sourceType,
+  shadowDepth
+) {
+
+  let descriptors =
+    sourceType === "human"
+      ? source.humanAccumulationLayers
+      : source.aiAccumulationLayers;
+
+  let visibleLayers = [];
+
+  for (
+    let i = 0;
+    i < descriptors.length;
+    i++
+  ) {
+
+    let descriptor = descriptors[i];
+    let reveal = getAccumulationLayerReveal(
+      descriptor,
+      shadowDepth
+    );
+
+    if (
+      reveal > 0
+    ) {
+
+      visibleLayers.push({
+        offsetX: descriptor.offsetX,
+        offsetY: descriptor.offsetY,
+        extrusion: descriptor.extrusion,
+        rotation: descriptor.rotation,
+        scale: descriptor.scale,
+        alphaRatio: descriptor.alphaRatio,
+        reveal
+      });
+    }
+  }
+
+  return visibleLayers;
+}
+
+
+function drawCapturedAccumulationLayers(
+  contribution,
+  decay
+) {
+
+  let accumulationLayers =
+    contribution.accumulationLayers || [];
+
+  for (
+    let layerIndex = 0;
+    layerIndex < accumulationLayers.length;
+    layerIndex++
+  ) {
+
+    let layer = accumulationLayers[layerIndex];
+
+    push();
+
+    translate(
+      layer.offsetX
+      +
+      layer.extrusion * THICKNESS_DIRECTION_X,
+      layer.offsetY
+      +
+      layer.extrusion * THICKNESS_DIRECTION_Y
+    );
+
+    rotate(layer.rotation);
+
+    fill(
+      contribution.color[0],
+      contribution.color[1],
+      contribution.color[2],
+      contribution.alpha
+      *
+      ACCUMULATION_LAYER_ALPHA_RATIO
+      *
+      layer.alphaRatio
+      *
+      layer.reveal
+      *
+      decay
+    );
+
+    rect(
+      0,
+      0,
+      contribution.width * layer.scale,
+      contribution.height * layer.scale
+    );
+
+    pop();
+  }
+}
+
+
 function getAmbientVisualOffset(
   source,
   sourceType
@@ -491,6 +838,79 @@ function getAmbientSourceAlpha(
     8,
     60
   );
+}
+
+
+function getShadowVisualState(
+  sourceType,
+  shadowDepth
+) {
+
+  let depth =
+    constrain(
+      shadowDepth,
+      0,
+      1
+    );
+
+  let ambientColor =
+    sourceType === "human"
+      ? HUMAN_TEST_COLOR
+      : AI_TEST_COLOR;
+
+  let deepColor =
+    sourceType === "human"
+      ? HUMAN_SHADOW_DEEP_COLOR
+      : AI_SHADOW_DEEP_COLOR;
+
+  return {
+    color: [
+      lerp(ambientColor[0], deepColor[0], depth),
+      lerp(ambientColor[1], deepColor[1], depth),
+      lerp(ambientColor[2], deepColor[2], depth)
+    ],
+    alpha:
+      getAmbientSourceAlpha(sourceType)
+      *
+      lerp(1, SHADOW_FINAL_ALPHA_MULTIPLIER, depth),
+    sizeMultiplier:
+      lerp(1, SHADOW_FINAL_SIZE_MULTIPLIER, depth),
+    visualWeight:
+      lerp(1, SHADOW_FINAL_VISUAL_WEIGHT, depth)
+  };
+}
+
+
+function getEffectiveShadowDepth() {
+
+  return shadowDeepeningProgress;
+}
+
+
+function getActiveSourceShadowDepth(
+  source,
+  sourceType
+) {
+
+  let state =
+    sourceType === "human"
+      ? source.humanGatheringState
+      : source.aiGatheringState;
+
+  if (
+    viewerState !== "STAYING"
+    ||
+    state === null
+    ||
+    state.stopId !== currentStopId
+    ||
+    state.gatherProgress < 1
+  ) {
+
+    return 0;
+  }
+
+  return getEffectiveShadowDepth();
 }
 
 
@@ -957,24 +1377,41 @@ function captureLeavingVisualState() {
         continue;
       }
 
+      let capturedDepth =
+        entry.state.gatherProgress >= 1
+          ? getEffectiveShadowDepth()
+          : 0;
+
+      let capturedVisual =
+        getShadowVisualState(
+          entry.sourceType,
+          capturedDepth
+        );
+
       contributions.push({
         sourceId: entry.identity.sourceId,
         sourceType: entry.sourceType,
         originSourceId: entry.identity.sourceId,
         x: entry.state.currentPosition.x,
         y: entry.state.currentPosition.y,
-        width: source.w,
-        height: source.h,
+        width: source.w * capturedVisual.sizeMultiplier,
+        height: source.h * capturedVisual.sizeMultiplier,
         rotation: 0,
-        alpha: getAmbientSourceAlpha(entry.sourceType),
-        visualWeight: 1,
+        alpha: capturedVisual.alpha,
+        visualWeight: capturedVisual.visualWeight,
         color: [
-          entry.color[0],
-          entry.color[1],
-          entry.color[2]
+          capturedVisual.color[0],
+          capturedVisual.color[1],
+          capturedVisual.color[2]
         ],
         motionPhase: source.t,
-        motionOffset: { x: 0, y: 0 }
+        motionOffset: { x: 0, y: 0 },
+        accumulationLayers:
+          getVisibleAccumulationLayerStates(
+            source,
+            entry.sourceType,
+            capturedDepth
+          )
       });
     }
   }
@@ -1087,6 +1524,11 @@ function drawLeavingVisualStates() {
       );
 
       rotate(contribution.rotation);
+
+      drawCapturedAccumulationLayers(
+        contribution,
+        decay
+      );
 
       fill(
         contribution.color[0],
@@ -1357,6 +1799,7 @@ function initializeGatheringState(
     target,
     gatherDelay: getGatherDelay(identity.sourceId, currentStopId),
     ghostPhase: getStableUnit(identity.sourceId + ":ghost") * TWO_PI,
+    gatherProgress: 0,
     currentPosition: { x: startPosition.x, y: startPosition.y }
   };
 }
@@ -1459,6 +1902,8 @@ function updateGatheringState(
   let smoothProgress =
     progress * progress * (3 - 2 * progress);
 
+  state.gatherProgress = progress;
+
   let ambientPosition =
     getAmbientPositionForSource(
       source,
@@ -1508,6 +1953,32 @@ function updateGatheringState(
       *
       waveRatio
   };
+}
+
+
+function updateShadowDeepening(
+  now
+) {
+
+  if (
+    viewerState !== "STAYING"
+    ||
+    currentStopSelection === null
+  ) {
+
+    return;
+  }
+
+  shadowDeepeningProgress =
+    constrain(
+      (
+        now - currentStopDeepeningStartTime
+      )
+      /
+      SHADOW_DEEPEN_DURATION_MS,
+      0,
+      1
+    );
 }
 
 
@@ -2216,6 +2687,7 @@ const CARRY_STEP_FRAMES = 1800;
 const CARRY_MAX_PER_STOP = 12;
 
 const CARRY_EXTRA_COUNT = 10;
+const CARRY_SOURCE_MATCH_MAX_DISTANCE = 28;
 
 
 // ==================================================
@@ -2323,6 +2795,10 @@ let stopY = 0;
 let currentStopFrames = 0;
 
 let currentImprint = null;
+
+let currentStopGatheringStartTime = 0;
+let currentStopDeepeningStartTime = 0;
+let shadowDeepeningProgress = 0;
 
 let leavingVisualStates = [];
 let leavingHandoffStopId = null;
@@ -2540,6 +3016,10 @@ function draw() {
   if (
     viewerState === "STAYING"
   ) {
+
+    updateShadowDeepening(
+      millis()
+    );
 
     currentStopFrames++;
 
@@ -2861,6 +3341,17 @@ class TraceSource {
       random(3, 8);
 
 
+    this.humanAccumulationLayers =
+      createAccumulationLayerDescriptors(
+        this.humanSource.sourceId
+      );
+
+    this.aiAccumulationLayers =
+      createAccumulationLayerDescriptors(
+        this.aiSource.sourceId
+      );
+
+
     this.alpha =
       random(16, 32);
 
@@ -3108,6 +3599,15 @@ class TraceSource {
         "ai"
       );
 
+    let aiShadowVisual =
+      getShadowVisualState(
+        "ai",
+        getActiveSourceShadowDepth(
+          this,
+          "ai"
+        )
+      );
+
     if (
       !isSourceInLeavingHandoff(
         this,
@@ -3117,11 +3617,43 @@ class TraceSource {
       getAmbientGhostState(this, "ai") === null
     ) {
 
+      drawAccumulationLayers(
+        this,
+        "ai",
+        {
+          x:
+            aiPosition.x
+            +
+            (
+              aiPosition.isGathering
+              ||
+              aiPosition.isFrozen
+                ? 0
+                : aiOffsetX
+            ),
+          y:
+            aiPosition.y
+            +
+            (
+              aiPosition.isGathering
+              ||
+              aiPosition.isFrozen
+                ? 0
+                : aiOffsetY
+            )
+        },
+        aiShadowVisual,
+        getActiveSourceShadowDepth(
+          this,
+          "ai"
+        )
+      );
+
       fill(
-        AI_TEST_COLOR[0],
-        AI_TEST_COLOR[1],
-        AI_TEST_COLOR[2],
-        aiAlpha
+        aiShadowVisual.color[0],
+        aiShadowVisual.color[1],
+        aiShadowVisual.color[2],
+        aiShadowVisual.alpha
       );
 
 
@@ -3152,13 +3684,14 @@ class TraceSource {
       ),
 
       round(
-        this.w
+        this.w * aiShadowVisual.sizeMultiplier
       ),
 
         round(
-          this.h
+          this.h * aiShadowVisual.sizeMultiplier
         )
       );
+
     }
 
 
@@ -3235,6 +3768,15 @@ class TraceSource {
         "human"
       );
 
+    let humanShadowVisual =
+      getShadowVisualState(
+        "human",
+        getActiveSourceShadowDepth(
+          this,
+          "human"
+        )
+      );
+
     if (
       !isSourceInLeavingHandoff(
         this,
@@ -3244,11 +3786,44 @@ class TraceSource {
       getAmbientGhostState(this, "human") === null
     ) {
 
+      // Accumulation layers are rendered behind the front fragment.
+      drawAccumulationLayers(
+        this,
+        "human",
+        {
+          x:
+            humanPosition.x
+            +
+            (
+              humanPosition.isGathering
+              ||
+              humanPosition.isFrozen
+                ? 0
+                : humanOffsetX
+            ),
+          y:
+            humanPosition.y
+            +
+            (
+              humanPosition.isGathering
+              ||
+              humanPosition.isFrozen
+                ? 0
+                : humanOffsetY
+            )
+        },
+        humanShadowVisual,
+        getActiveSourceShadowDepth(
+          this,
+          "human"
+        )
+      );
+
       fill(
-        HUMAN_TEST_COLOR[0],
-        HUMAN_TEST_COLOR[1],
-        HUMAN_TEST_COLOR[2],
-        humanAlpha
+        humanShadowVisual.color[0],
+        humanShadowVisual.color[1],
+        humanShadowVisual.color[2],
+        humanShadowVisual.alpha
       );
 
 
@@ -3279,13 +3854,14 @@ class TraceSource {
       ),
 
       round(
-        this.w
+        this.w * humanShadowVisual.sizeMultiplier
       ),
 
         round(
-          this.h
+          this.h * humanShadowVisual.sizeMultiplier
         )
       );
+
     }
   }
 }
@@ -5055,6 +5631,8 @@ class TraceFragment {
 
     if (
       this.suppressLegacyVisualDuringHandoff
+      &&
+      !this.carried
     ) {
 
       return;
@@ -5254,21 +5832,28 @@ class TraceFragment {
     }
 
 
+    let carriedSourceMode =
+      this.carried
+        ? this.carrySourceMode
+        : CARRY_SOURCE_MODE_MIXED;
+
     let isCarriedCloud =
 
       this.carried
 
       &&
 
-      !inLeaveMotionHold;
+      !inLeaveMotionHold
+
+      &&
+
+      carriedSourceMode !== null;
 
 
     // Purple / mixed appearance comes from overlapping red and blue passes.
     // Only the carried cloud uses its assigned source mode.
     drawSourcePasses(
-      isCarriedCloud
-        ? this.carrySourceMode
-        : CARRY_SOURCE_MODE_MIXED,
+      carriedSourceMode,
       this.x + this.displayJitterX,
       this.y + this.displayJitterY,
       displayW,
@@ -5299,6 +5884,13 @@ function beginNewStop() {
 
   currentStopFrames = 0;
 
+  currentStopGatheringStartTime = millis();
+  currentStopDeepeningStartTime =
+    currentStopGatheringStartTime
+    +
+    GATHERING_DURATION_MS;
+  shadowDeepeningProgress = 0;
+
 
   // Distance answers only which existing sources belong to this stop.
   // Future gathering/target behavior is intentionally not connected here.
@@ -5306,7 +5898,7 @@ function beginNewStop() {
 
 
   initializeGatheringForStop(
-    millis()
+    currentStopGatheringStartTime
   );
 
 
@@ -5460,6 +6052,67 @@ function chooseCarrySourceMode() {
 
 
   return CARRY_SOURCE_MODE_HUMAN;
+}
+
+function resolveCarrySourceIdentity(fragment) {
+
+  let handoff =
+    leavingVisualStates[leavingVisualStates.length - 1];
+
+  if (
+    handoff === undefined
+    ||
+    handoff.stopId !== currentStopId
+  ) {
+
+    return null;
+  }
+
+  let nearest = null;
+  let nearestDistance = Infinity;
+
+  for (
+    let i = 0;
+    i < handoff.contributions.length;
+    i++
+  ) {
+
+    let contribution = handoff.contributions[i];
+    let contributionDistance = dist(
+      fragment.x,
+      fragment.y,
+      contribution.x,
+      contribution.y
+    );
+
+    if (
+      contributionDistance < nearestDistance
+    ) {
+
+      nearest = contribution;
+      nearestDistance = contributionDistance;
+    }
+  }
+
+  if (
+    nearest === null
+    ||
+    nearestDistance > CARRY_SOURCE_MATCH_MAX_DISTANCE
+    ||
+    (
+      nearest.sourceType !== "human"
+      &&
+      nearest.sourceType !== "ai"
+    )
+  ) {
+
+    return null;
+  }
+
+  return {
+    sourceType: nearest.sourceType,
+    originSourceId: nearest.originSourceId
+  };
 }
 
 function handleLeaveStop() {
@@ -5645,8 +6298,31 @@ function handleLeaveStop() {
 
     chosen.carried = true;
 
-    chosen.carrySourceMode =
-      chooseCarrySourceMode();
+    let carryIdentity =
+      resolveCarrySourceIdentity(chosen);
+
+    if (
+      carryIdentity !== null
+    ) {
+
+      chosen.sourceType =
+        carryIdentity.sourceType;
+
+      chosen.originSourceId =
+        carryIdentity.originSourceId;
+
+      chosen.carrySourceMode =
+        carryIdentity.sourceType === "human"
+          ? CARRY_SOURCE_MODE_HUMAN
+          : CARRY_SOURCE_MODE_AI;
+    }
+
+    else {
+
+      chosen.sourceType = null;
+      chosen.originSourceId = null;
+      chosen.carrySourceMode = null;
+    }
 
 
     candidates.splice(
