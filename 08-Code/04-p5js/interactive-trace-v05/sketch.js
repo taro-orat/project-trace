@@ -3244,6 +3244,621 @@ let imprints = [];
 
 
 // ==================================================
+// DAY 09 SOUND FIRST PASS
+//
+// This layer reads existing source/behaviour state only.
+// It never writes to source geometry or membership.
+// ==================================================
+
+const SOUND_PROXIMITY_SMOOTHING_MS = 420;
+const SOUND_PAN_SMOOTHING_MS = 420;
+const SOUND_REVERB_SMOOTHING_MS = 850;
+const SOUND_BASELINE_GAIN = 0.020;
+const SOUND_PROXIMITY_GAIN = 0.080;
+const SOUND_AREA_REFERENCE_PX = 18;
+const SOUND_AREA_WEIGHT_MAX = 1.40;
+const SOUND_PRESENCE_NORMALIZATION = 2.40;
+const SOUND_AMBIENT_STATE_WEIGHT = 1.0;
+const SOUND_GHOST_STATE_WEIGHT = 0.30;
+const SOUND_RESIDUAL_STATE_WEIGHT = 0.40;
+const SOUND_MOVING_WET = 0.08;
+const SOUND_STAYING_WET = 0.44;
+const SOUND_PAN_LIMIT = 0.6;
+
+let soundSystem = null;
+let soundUnlockListenerInstalled = false;
+let soundStopReference = null;
+
+
+function createSoundBus(
+  context,
+  convolver,
+  frequencyA,
+  frequencyB,
+  waveform
+) {
+
+  let oscillatorA = context.createOscillator();
+  let oscillatorB = context.createOscillator();
+  let toneGain = context.createGain();
+  let busGain = context.createGain();
+  let panner = context.createStereoPanner();
+  let dryGain = context.createGain();
+
+  oscillatorA.type = waveform;
+  oscillatorB.type = waveform === "sine" ? "triangle" : "sine";
+  oscillatorA.frequency.value = frequencyA;
+  oscillatorB.frequency.value = frequencyB;
+  toneGain.gain.value = 0.28;
+  busGain.gain.value = SOUND_BASELINE_GAIN;
+  dryGain.gain.value = 0.82;
+
+  oscillatorA.connect(toneGain);
+  oscillatorB.connect(toneGain);
+  toneGain.connect(busGain);
+  busGain.connect(panner);
+  panner.connect(dryGain);
+  panner.connect(soundSystem.convolver);
+  dryGain.connect(soundSystem.masterGain);
+
+  oscillatorA.start();
+  oscillatorB.start();
+
+  return {
+    busGain,
+    panner,
+    proximity: 0,
+    pan: 0
+  };
+}
+
+
+function createSoundSystem() {
+
+  let AudioContextClass =
+    window.AudioContext
+    ||
+    window.webkitAudioContext;
+
+  if (
+    !AudioContextClass
+  ) {
+
+    return null;
+  }
+
+  let context = new AudioContextClass();
+  let masterGain = context.createGain();
+  let compressor = context.createDynamicsCompressor();
+  let convolver = context.createConvolver();
+  let reverbWetGain = context.createGain();
+  let impulseLength = floor(context.sampleRate * 1.8);
+  let impulse = context.createBuffer(
+    2,
+    impulseLength,
+    context.sampleRate
+  );
+
+  for (
+    let channel = 0;
+    channel < impulse.numberOfChannels;
+    channel++
+  ) {
+
+    let data = impulse.getChannelData(channel);
+
+    for (
+      let i = 0;
+      i < impulseLength;
+      i++
+    ) {
+
+      data[i] =
+        (
+          Math.random() * 2 - 1
+        )
+        *
+        pow(
+          1 - i / impulseLength,
+          2.2
+        );
+    }
+  }
+
+  convolver.buffer = impulse;
+  reverbWetGain.gain.value = SOUND_MOVING_WET;
+  masterGain.gain.value = 0.22;
+  compressor.threshold.value = -18;
+  compressor.knee.value = 18;
+  compressor.ratio.value = 8;
+  compressor.attack.value = 0.005;
+  compressor.release.value = 0.18;
+  masterGain.connect(compressor);
+  compressor.connect(context.destination);
+
+  soundSystem = {
+    context,
+    masterGain,
+    convolver,
+    reverbWetGain,
+    human: null,
+    ai: null,
+    enabled: false
+  };
+
+  soundSystem.human = createSoundBus(
+    context,
+    convolver,
+    132,
+    174,
+    "sine"
+  );
+
+  soundSystem.ai = createSoundBus(
+    context,
+    convolver,
+    318,
+    412,
+    "triangle"
+  );
+
+  convolver.connect(reverbWetGain);
+  reverbWetGain.connect(masterGain);
+
+  soundSystem.enabled = true;
+  return soundSystem;
+}
+
+
+function unlockSound() {
+
+  if (
+    soundSystem === null
+  ) {
+
+    soundSystem = createSoundSystem();
+  }
+
+  if (
+    soundSystem === null
+  ) {
+
+    return;
+  }
+
+  if (
+    soundSystem.context.state === "suspended"
+  ) {
+
+    soundSystem.context.resume();
+  }
+}
+
+
+function captureSoundStopReference() {
+
+  if (
+    currentStopSelection === null
+  ) {
+
+    soundStopReference = null;
+    return;
+  }
+
+  soundStopReference = {
+    stopId: currentStopSelection.stopId,
+    human: new Map(),
+    ai: new Map()
+  };
+
+  for (
+    let i = 0;
+    i < sources.length;
+    i++
+  ) {
+
+    let source = sources[i];
+    let humanId = source.humanSource.sourceId;
+    let aiId = source.aiSource.sourceId;
+
+    if (
+      currentStopSelection.humanSourceIds.includes(humanId)
+    ) {
+
+      soundStopReference.human.set(
+        humanId,
+        getLastVisibleAmbientPosition(source, "human")
+      );
+    }
+
+    if (
+      currentStopSelection.aiSourceIds.includes(aiId)
+    ) {
+
+      soundStopReference.ai.set(
+        aiId,
+        getLastVisibleAmbientPosition(source, "ai")
+      );
+    }
+  }
+}
+
+
+function getSoundSourcePosition(
+  source,
+  sourceType,
+  sourceId
+) {
+
+  if (
+    viewerState === "STAYING"
+    &&
+    soundStopReference !== null
+  ) {
+
+    let frozenMap =
+      sourceType === "human"
+        ? soundStopReference.human
+        : soundStopReference.ai;
+
+    if (
+      frozenMap.has(sourceId)
+    ) {
+
+      return frozenMap.get(sourceId);
+    }
+
+    return null;
+  }
+
+  return getAmbientPositionForSource(
+    source,
+    sourceType
+  );
+}
+
+
+function getSoundProximityAndPan(
+  sourceType
+) {
+
+  let selectedIds = null;
+
+  if (
+    viewerState === "STAYING"
+    &&
+    currentStopSelection !== null
+  ) {
+
+    selectedIds = new Set(
+      sourceType === "human"
+        ? currentStopSelection.humanSourceIds
+        : currentStopSelection.aiSourceIds
+    );
+  }
+
+  let rawPresence = 0;
+  let weightedX = 0;
+  let weightedPosition = 0;
+
+  let addContribution = (
+    position,
+    areaWeight,
+    stateWeight
+  ) => {
+
+    if (
+      position === null
+      ||
+      stateWeight <= 0
+    ) {
+
+      return;
+    }
+
+    let distanceWeight =
+      getDistanceInteractionFalloff(
+        position,
+        sourceType
+      );
+
+    if (
+      distanceWeight <= 0
+    ) {
+
+      return;
+    }
+
+    let contributionWeight =
+      distanceWeight
+      *
+      areaWeight
+      *
+      stateWeight;
+
+    rawPresence += contributionWeight;
+    weightedX += position.x * contributionWeight;
+    weightedPosition += contributionWeight;
+  };
+
+  for (
+    let i = 0;
+    i < sources.length;
+    i++
+  ) {
+
+    let source = sources[i];
+    let sourceId =
+      sourceType === "human"
+        ? source.humanSource.sourceId
+        : source.aiSource.sourceId;
+
+    if (
+      selectedIds !== null
+      &&
+      !selectedIds.has(sourceId)
+    ) {
+
+      continue;
+    }
+
+    let position =
+      getSoundSourcePosition(
+        source,
+        sourceType,
+        sourceId
+      );
+
+    let visualScale =
+      getMaterialVisualScaleForSource(
+        source,
+        sourceType
+      );
+    let areaWeight = constrain(
+      sqrt(
+        source.w
+        *
+        visualScale
+        *
+        source.h
+        *
+        visualScale
+      )
+      /
+      SOUND_AREA_REFERENCE_PX,
+      0.15,
+      SOUND_AREA_WEIGHT_MAX
+    );
+
+    let ghostState =
+      getAmbientGhostState(
+        source,
+        sourceType
+      );
+    let appearanceProgress =
+      getAmbientAppearanceTransitionProgress(
+        source,
+        sourceType
+      );
+
+    addContribution(
+      position,
+      areaWeight,
+      SOUND_AMBIENT_STATE_WEIGHT
+      *
+      appearanceProgress
+    );
+
+    if (
+      viewerState !== "STAYING"
+      &&
+      ghostState !== null
+    ) {
+
+      addContribution(
+        {
+          x: ghostState.x,
+          y: ghostState.y
+        },
+        areaWeight,
+        SOUND_GHOST_STATE_WEIGHT
+        *
+        (1 - ghostState.recoveryProgress)
+      );
+    }
+  }
+
+  if (
+    viewerState !== "STAYING"
+  ) {
+
+    for (
+      let imprintIndex = 0;
+      imprintIndex < imprints.length;
+      imprintIndex++
+    ) {
+
+      let imprint = imprints[imprintIndex];
+
+      if (
+        imprint.active
+      ) {
+
+        continue;
+      }
+
+      let decay = imprint.getDecayFactor();
+      let pieceGroups = [
+        imprint.fillPieces,
+        imprint.edgePieces,
+        imprint.massPieces
+      ];
+
+      for (
+        let groupIndex = 0;
+        groupIndex < pieceGroups.length;
+        groupIndex++
+      ) {
+
+        let pieces = pieceGroups[groupIndex];
+        let stride = max(
+          1,
+          floor(pieces.length / 32)
+        );
+
+        for (
+          let pieceIndex = 0;
+          pieceIndex < pieces.length;
+          pieceIndex += stride
+        ) {
+
+          let piece = pieces[pieceIndex];
+          let pieceAlpha =
+            groupIndex === 0
+              ? imprint.getFillAlphaAtState(
+                  piece,
+                  imprint.frozenFormStrength,
+                  imprint.frozenDarkStrength
+                )
+              : groupIndex === 1
+                ? imprint.getEdgeAlphaAtState(
+                    piece,
+                    imprint.frozenFormStrength,
+                    imprint.frozenDarkStrength
+                  )
+                : imprint.getMassAlphaAtState(
+                    piece,
+                    imprint.frozenDarkStrength
+                  );
+
+          let stateWeight =
+            SOUND_RESIDUAL_STATE_WEIGHT
+            *
+            decay
+            *
+            constrain(pieceAlpha / 120, 0, 1);
+
+          let position = {
+            x: imprint.x + piece.x,
+            y: imprint.y + piece.y
+          };
+          let areaWeight = constrain(
+            sqrt(piece.w * piece.h)
+            /
+            SOUND_AREA_REFERENCE_PX,
+            0.15,
+            SOUND_AREA_WEIGHT_MAX
+          );
+
+          addContribution(
+            position,
+            areaWeight,
+            stateWeight
+          );
+        }
+      }
+    }
+  }
+
+  let proximity = constrain(
+    rawPresence
+    /
+    (
+      rawPresence
+      +
+      SOUND_PRESENCE_NORMALIZATION
+    ),
+    0,
+    1
+  );
+  let centroidX =
+    weightedX / max(0.001, weightedPosition);
+  let pan = constrain(
+    map(centroidX, 0, width, -SOUND_PAN_LIMIT, SOUND_PAN_LIMIT),
+    -SOUND_PAN_LIMIT,
+    SOUND_PAN_LIMIT
+  );
+
+  return { proximity, pan };
+}
+
+
+function updateSoundParam(
+  parameter,
+  value,
+  smoothingMs,
+  context
+) {
+
+  parameter.setTargetAtTime(
+    value,
+    context.currentTime,
+    smoothingMs / 1000
+  );
+}
+
+
+function updateSoundLayer() {
+
+  if (
+    soundSystem === null
+    ||
+    !soundSystem.enabled
+  ) {
+
+    return;
+  }
+
+  let context = soundSystem.context;
+  let human =
+    getSoundProximityAndPan("human");
+  let ai =
+    getSoundProximityAndPan("ai");
+  let isStaying = viewerState === "STAYING";
+
+  soundSystem.human.proximity = human.proximity;
+  soundSystem.ai.proximity = ai.proximity;
+  soundSystem.human.pan = human.pan;
+  soundSystem.ai.pan = ai.pan;
+
+  updateSoundParam(
+    soundSystem.human.busGain.gain,
+    SOUND_BASELINE_GAIN
+    +
+    SOUND_PROXIMITY_GAIN * human.proximity,
+    SOUND_PROXIMITY_SMOOTHING_MS,
+    context
+  );
+  updateSoundParam(
+    soundSystem.ai.busGain.gain,
+    SOUND_BASELINE_GAIN
+    +
+    SOUND_PROXIMITY_GAIN * ai.proximity,
+    SOUND_PROXIMITY_SMOOTHING_MS,
+    context
+  );
+  updateSoundParam(
+    soundSystem.human.panner.pan,
+    human.pan,
+    SOUND_PAN_SMOOTHING_MS,
+    context
+  );
+  updateSoundParam(
+    soundSystem.ai.panner.pan,
+    ai.pan,
+    SOUND_PAN_SMOOTHING_MS,
+    context
+  );
+  updateSoundParam(
+    soundSystem.reverbWetGain.gain,
+    isStaying ? SOUND_STAYING_WET : SOUND_MOVING_WET,
+    SOUND_REVERB_SMOOTHING_MS,
+    context
+  );
+}
+
+
+// ==================================================
 // VIEWER STATE
 // ==================================================
 
@@ -3401,6 +4016,18 @@ async function setup() {
     "100vh",
     "important"
   );
+
+  if (
+    !soundUnlockListenerInstalled
+  ) {
+
+    window.addEventListener(
+      "pointerdown",
+      unlockSound,
+      { passive: true }
+    );
+    soundUnlockListenerInstalled = true;
+  }
 
 
   noSmooth();
@@ -3627,6 +4254,7 @@ function draw() {
 
 
   finalizeAmbientGhostRecovery();
+  updateSoundLayer();
 }
 
 
@@ -7059,6 +7687,7 @@ function beginNewStop() {
   // Distance answers only which existing sources belong to this stop.
   // Future gathering/target behavior is intentionally not connected here.
   buildCurrentStopSelection();
+  captureSoundStopReference();
 
 
   initializeGatheringForStop(
