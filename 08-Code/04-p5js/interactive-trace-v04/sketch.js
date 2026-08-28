@@ -59,6 +59,14 @@ const AMBIENT_GRID_COLUMNS = 24;
 const AMBIENT_GRID_ROWS = 18;
 const AMBIENT_GRID_JITTER = 0.28;
 
+// Node 2B: Distance only selects existing ambient sources.
+// These values are deliberately independent of the renderer and movement code.
+const DISTANCE_MIN_RADIUS = 55;
+const DISTANCE_MAX_RADIUS = 260;
+const DISTANCE_BOUNDARY_WOBBLE = 0.16;
+const DEBUG_DISTANCE_BOUNDARY = true;
+const DEBUG_SELECTED_MARKER = false;
+
 let nextHumanSourceNumber = 1;
 let nextAISourceNumber = 1;
 
@@ -241,6 +249,323 @@ function getAmbientPositionForSource(
   return sourceType === "human"
     ? source.humanAmbientPosition
     : source.aiAmbientPosition;
+}
+
+
+function mapDistanceToRadius(
+  distanceValue
+) {
+
+  return map(
+    constrain(distanceValue, 0, 1),
+    0,
+    1,
+    DISTANCE_MIN_RADIUS,
+    DISTANCE_MAX_RADIUS
+  );
+}
+
+
+function getStableBoundaryUnit(
+  stopId,
+  sourceType
+) {
+
+  let key =
+    String(stopId)
+    + ":"
+    + sourceType;
+
+  let hash = 23;
+
+  for (
+    let i = 0;
+    i < key.length;
+    i++
+  ) {
+
+    hash =
+      (
+        hash * 37
+        + key.charCodeAt(i)
+      )
+      %
+      100000;
+  }
+
+  return hash / 100000;
+}
+
+
+function getOrganicBoundaryRadius(
+  baseRadius,
+  angle,
+  stopId,
+  sourceType
+) {
+
+  let seed =
+    getStableBoundaryUnit(
+      stopId,
+      sourceType
+    );
+
+  let phase =
+    seed * TWO_PI;
+
+  // Low-frequency harmonics keep the boundary continuous and organic.
+  // The same function is used for both source types; only the stable seed differs.
+  let wobble =
+    sin(angle * 2 + phase) * 0.50
+    +
+    sin(angle * 3 + phase * 1.7) * 0.30
+    +
+    cos(angle * 5 + phase * 0.6) * 0.20;
+
+  return baseRadius *
+    (
+      1
+      + DISTANCE_BOUNDARY_WOBBLE * wobble
+    );
+}
+
+
+function buildCurrentStopSelection() {
+
+  let humanDistance =
+    getParamsForSourceType("human").distance;
+
+  let aiDistance =
+    getParamsForSourceType("ai").distance;
+
+  let humanRadius =
+    mapDistanceToRadius(humanDistance);
+
+  let aiRadius =
+    mapDistanceToRadius(aiDistance);
+
+  let humanSourceIds = [];
+  let aiSourceIds = [];
+
+  for (
+    let i = 0;
+    i < sources.length;
+    i++
+  ) {
+
+    let source = sources[i];
+
+    let humanPosition =
+      getAmbientPositionForSource(
+        source,
+        "human"
+      );
+
+    let aiPosition =
+      getAmbientPositionForSource(
+        source,
+        "ai"
+      );
+
+    let humanAngle =
+      atan2(
+        humanPosition.y - stopY,
+        humanPosition.x - stopX
+      );
+
+    let aiAngle =
+      atan2(
+        aiPosition.y - stopY,
+        aiPosition.x - stopX
+      );
+
+    if (
+      dist(
+        humanPosition.x,
+        humanPosition.y,
+        stopX,
+        stopY
+      )
+      <=
+      getOrganicBoundaryRadius(
+        humanRadius,
+        humanAngle,
+        currentStopId,
+        "human"
+      )
+    ) {
+
+      humanSourceIds.push(
+        source.humanSource.sourceId
+      );
+    }
+
+    if (
+      dist(
+        aiPosition.x,
+        aiPosition.y,
+        stopX,
+        stopY
+      )
+      <=
+      getOrganicBoundaryRadius(
+        aiRadius,
+        aiAngle,
+        currentStopId,
+        "ai"
+      )
+    ) {
+
+      aiSourceIds.push(
+        source.aiSource.sourceId
+      );
+    }
+  }
+
+  currentStopSelection = {
+    stopId: currentStopId,
+    center: { x: stopX, y: stopY },
+    humanRadius,
+    aiRadius,
+    humanSourceIds,
+    aiSourceIds
+  };
+
+  console.log(
+    "DISTANCE SELECTION",
+    "stop =",
+    currentStopId,
+    "Human selected =",
+    humanSourceIds.length,
+    "AI selected =",
+    aiSourceIds.length,
+    "Human base radius =",
+    round(humanRadius),
+    "AI base radius =",
+    round(aiRadius)
+  );
+}
+
+
+function drawDistanceDebug() {
+
+  if (
+    !DEBUG_DISTANCE_BOUNDARY
+    ||
+    currentStopSelection === null
+    ||
+    viewerState !== "STAYING"
+  ) {
+
+    return;
+  }
+
+  let selection = currentStopSelection;
+
+  push();
+
+  noFill();
+  strokeWeight(1);
+
+  for (
+    let boundaryIndex = 0;
+    boundaryIndex < 2;
+    boundaryIndex++
+  ) {
+
+    let sourceType =
+      boundaryIndex === 0
+        ? "human"
+        : "ai";
+
+    let baseRadius =
+      sourceType === "human"
+        ? selection.humanRadius
+        : selection.aiRadius;
+
+    stroke(
+      sourceType === "human"
+        ? 255
+        : 0,
+      sourceType === "human"
+        ? 0
+        : 110,
+      sourceType === "human"
+        ? 70
+        : 255,
+      90
+    );
+
+    beginShape();
+
+    for (
+      let angle = 0;
+      angle < TWO_PI;
+      angle += 0.08
+    ) {
+
+      let radius =
+        getOrganicBoundaryRadius(
+          baseRadius,
+          angle,
+          selection.stopId,
+          sourceType
+        );
+
+      vertex(
+        selection.center.x + cos(angle) * radius,
+        selection.center.y + sin(angle) * radius
+      );
+    }
+
+    endShape(CLOSE);
+  }
+
+  stroke(80, 80, 80, 140);
+  line(
+    selection.center.x - 5,
+    selection.center.y,
+    selection.center.x + 5,
+    selection.center.y
+  );
+  line(
+    selection.center.x,
+    selection.center.y - 5,
+    selection.center.x,
+    selection.center.y + 5
+  );
+
+  if (
+    DEBUG_SELECTED_MARKER
+  ) {
+
+    for (
+      let i = 0;
+      i < sources.length;
+      i++
+    ) {
+
+      let source = sources[i];
+      let humanPosition = getAmbientPositionForSource(source, "human");
+      let aiPosition = getAmbientPositionForSource(source, "ai");
+
+      if (
+        selection.humanSourceIds.includes(source.humanSource.sourceId)
+      ) {
+        stroke(255, 0, 70, 160);
+        point(humanPosition.x, humanPosition.y);
+      }
+
+      if (
+        selection.aiSourceIds.includes(source.aiSource.sourceId)
+      ) {
+        stroke(0, 110, 255, 160);
+        point(aiPosition.x, aiPosition.y);
+      }
+    }
+  }
+
+  pop();
 }
 
 
@@ -670,6 +995,9 @@ let currentStopFrames = 0;
 
 let currentImprint = null;
 
+// Node 2B: stable source IDs selected once when a stop begins.
+let currentStopSelection = null;
+
 
 // ==================================================
 // CARRIED COUNT
@@ -912,6 +1240,10 @@ function draw() {
 
     sources[i].display();
   }
+
+
+  // Debug-only boundary overlay; selection itself never changes the renderer.
+  drawDistanceDebug();
 
 
   // ==================================================
@@ -3429,6 +3761,11 @@ function beginNewStop() {
 
 
   currentStopFrames = 0;
+
+
+  // Distance answers only which existing sources belong to this stop.
+  // Future gathering/target behavior is intentionally not connected here.
+  buildCurrentStopSelection();
 
 
   currentImprint =
