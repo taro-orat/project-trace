@@ -67,6 +67,14 @@ const DISTANCE_BOUNDARY_WOBBLE = 0.16;
 const DEBUG_DISTANCE_BOUNDARY = true;
 const DEBUG_SELECTED_MARKER = false;
 
+// Node 2C: gathering motion only. These values do not alter selection.
+const GATHERING_DURATION_MS = 6000;
+const GATHER_DELAY_MAX_MS = 600;
+const GATHER_START_WAVE_RATIO = 1.0;
+const GATHER_END_MICRO_MOTION_RATIO = 0.15;
+const GATHER_TARGET_RX = 58;
+const GATHER_TARGET_RY = 74;
+
 let nextHumanSourceNumber = 1;
 let nextAISourceNumber = 1;
 
@@ -294,6 +302,418 @@ function getStableBoundaryUnit(
   }
 
   return hash / 100000;
+}
+
+
+function getStableUnit(
+  key
+) {
+
+  let hash = 29;
+
+  for (
+    let i = 0;
+    i < key.length;
+    i++
+  ) {
+
+    hash =
+      (
+        hash * 41
+        + key.charCodeAt(i)
+      )
+      %
+      100000;
+  }
+
+  return hash / 100000;
+}
+
+
+function getAmbientVisualOffset(
+  source,
+  sourceType
+) {
+
+  let params =
+    getParamsForSourceType(sourceType);
+
+  let spread =
+    map(
+      params.instability,
+      0,
+      1,
+      0,
+      10
+    );
+
+  let offsetSeed =
+    sourceType === "human"
+      ? 4000
+      : 2000;
+
+  return {
+    x: map(
+      noise(source.t + offsetSeed),
+      0,
+      1,
+      -spread,
+      spread
+    ),
+    y: map(
+      noise(source.t + offsetSeed + 1000),
+      0,
+      1,
+      -spread,
+      spread
+    )
+  };
+}
+
+
+function getCurrentAmbientDisplayPosition(
+  source,
+  sourceType
+) {
+
+  let ambientPosition =
+    getAmbientPositionForSource(
+      source,
+      sourceType
+    );
+
+  let ambientOffset =
+    getAmbientVisualOffset(
+      source,
+      sourceType
+    );
+
+  return {
+    x:
+      ambientPosition.x
+      +
+      (
+        sourceType === "human"
+          ? source.humanJitterX
+          : source.aiJitterX
+      )
+      +
+      ambientOffset.x,
+    y:
+      ambientPosition.y
+      +
+      (
+        sourceType === "human"
+          ? source.humanJitterY
+          : source.aiJitterY
+      )
+      +
+      ambientOffset.y
+  };
+}
+
+
+function getSourceDisplayPosition(
+  source,
+  sourceType
+) {
+
+  let gatheringState =
+    sourceType === "human"
+      ? source.humanGatheringState
+      : source.aiGatheringState;
+
+  if (
+    viewerState === "STAYING"
+    &&
+    gatheringState !== null
+    &&
+    gatheringState.stopId === currentStopId
+  ) {
+
+    return {
+      x: gatheringState.currentPosition.x,
+      y: gatheringState.currentPosition.y,
+      isGathering: true,
+      isFrozen: false
+    };
+  }
+
+  let frozenPosition =
+    sourceType === "human"
+      ? source.humanStayFrozenPosition
+      : source.aiStayFrozenPosition;
+
+  if (
+    viewerState === "STAYING"
+    &&
+    frozenPosition !== null
+  ) {
+
+    return {
+      x: frozenPosition.x,
+      y: frozenPosition.y,
+      isGathering: false,
+      isFrozen: true
+    };
+  }
+
+  let ambientPosition =
+    getCurrentAmbientDisplayPosition(
+      source,
+      sourceType
+    );
+
+  return {
+    x: ambientPosition.x,
+    y: ambientPosition.y,
+    isGathering: false,
+    isFrozen: false
+  };
+}
+
+
+function getGatheringTarget(
+  sourceId,
+  stopId
+) {
+
+  let angle =
+    getStableUnit(
+      sourceId + ":" + stopId + ":angle"
+    )
+    *
+    TWO_PI;
+
+  let radius =
+    sqrt(
+      getStableUnit(
+        sourceId + ":" + stopId + ":radius"
+      )
+    );
+
+  return {
+    x:
+      stopX
+      +
+      cos(angle)
+      *
+      radius
+      *
+      GATHER_TARGET_RX,
+    y:
+      stopY
+      +
+      sin(angle)
+      *
+      radius
+      *
+      GATHER_TARGET_RY
+  };
+}
+
+
+function getGatherDelay(
+  sourceId,
+  stopId
+) {
+
+  return getStableUnit(
+    sourceId + ":" + stopId + ":delay"
+  ) * GATHER_DELAY_MAX_MS;
+}
+
+
+function initializeGatheringState(
+  source,
+  sourceType,
+  startTime
+) {
+
+  let identity =
+    sourceType === "human"
+      ? source.humanSource
+      : source.aiSource;
+
+  let startPosition =
+    getCurrentAmbientDisplayPosition(
+      source,
+      sourceType
+    );
+
+  let target =
+    getGatheringTarget(
+      identity.sourceId,
+      currentStopId
+    );
+
+  let ambientPosition =
+    getAmbientPositionForSource(
+      source,
+      sourceType
+    );
+
+  return {
+    stopId: currentStopId,
+    startTime,
+    startPosition,
+    startBasePosition: {
+      x: ambientPosition.x,
+      y: ambientPosition.y
+    },
+    target,
+    gatherDelay: getGatherDelay(identity.sourceId, currentStopId),
+    currentPosition: { x: startPosition.x, y: startPosition.y }
+  };
+}
+
+
+function initializeGatheringForStop(
+  startTime
+) {
+
+  let humanSelection =
+    new Set(
+      currentStopSelection.humanSourceIds
+    );
+
+  let aiSelection =
+    new Set(
+      currentStopSelection.aiSourceIds
+    );
+
+  for (
+    let i = 0;
+    i < sources.length;
+    i++
+  ) {
+
+    let source = sources[i];
+
+    let currentHumanPosition =
+      getCurrentAmbientDisplayPosition(
+        source,
+        "human"
+      );
+
+    let currentAIPosition =
+      getCurrentAmbientDisplayPosition(
+        source,
+        "ai"
+      );
+
+    source.humanGatheringState =
+      humanSelection.has(
+        source.humanSource.sourceId
+      )
+        ? initializeGatheringState(
+            source,
+            "human",
+            startTime
+          )
+        : null;
+
+    source.humanStayFrozenPosition =
+      source.humanGatheringState === null
+        ? currentHumanPosition
+        : null;
+
+    source.aiGatheringState =
+      aiSelection.has(
+        source.aiSource.sourceId
+      )
+        ? initializeGatheringState(
+            source,
+            "ai",
+            startTime
+          )
+        : null;
+
+    source.aiStayFrozenPosition =
+      source.aiGatheringState === null
+        ? currentAIPosition
+        : null;
+  }
+}
+
+
+function updateGatheringState(
+  state,
+  source,
+  sourceType,
+  now
+) {
+
+  let elapsed =
+    now - state.startTime;
+
+  let progress =
+    constrain(
+      (
+        elapsed - state.gatherDelay
+      )
+      /
+      (
+        GATHERING_DURATION_MS
+        -
+        state.gatherDelay
+      ),
+      0,
+      1
+    );
+
+  let smoothProgress =
+    progress * progress * (3 - 2 * progress);
+
+  let ambientPosition =
+    getAmbientPositionForSource(
+      source,
+      sourceType
+    );
+
+  let currentWavePosition =
+    getCurrentAmbientDisplayPosition(
+      source,
+      sourceType
+    );
+
+  let waveRatio =
+    lerp(
+      GATHER_START_WAVE_RATIO,
+      GATHER_END_MICRO_MOTION_RATIO,
+      progress
+    );
+
+  state.currentPosition = {
+    x:
+      lerp(
+        state.startBasePosition.x,
+        state.target.x,
+        smoothProgress
+      )
+      +
+      (
+        currentWavePosition.x
+        -
+        ambientPosition.x
+      )
+      *
+      waveRatio,
+    y:
+      lerp(
+        state.startBasePosition.y,
+        state.target.y,
+        smoothProgress
+      )
+      +
+      (
+        currentWavePosition.y
+        -
+        ambientPosition.y
+      )
+      *
+      waveRatio
+  };
 }
 
 
@@ -571,7 +991,8 @@ function drawDistanceDebug() {
 
 function getMovingAmbientJitter(
   position,
-  timeValue
+  timeValue,
+  allowStayingWave = false
 ) {
 
   if (
@@ -579,6 +1000,8 @@ function getMovingAmbientJitter(
     ||
     (
       viewerState !== "MOVING"
+      &&
+      !allowStayingWave
       &&
       leavePulse <= 0
     )
@@ -1532,6 +1955,11 @@ class TraceSource {
     this.humanJitterY = 0;
     this.aiJitterX = 0;
     this.aiJitterY = 0;
+
+    this.humanGatheringState = null;
+    this.aiGatheringState = null;
+    this.humanStayFrozenPosition = null;
+    this.aiStayFrozenPosition = null;
   }
 
 
@@ -1586,22 +2014,80 @@ class TraceSource {
       this.t += 0.05;
     }
 
-    let humanJitter =
-      getMovingAmbientJitter(
-        humanPosition,
-        this.t
-      );
+    // Selected sources keep advancing the same MOVING phase during gathering.
+    if (
+      viewerState === "STAYING"
+      &&
+      (
+        this.humanGatheringState !== null
+        ||
+        this.aiGatheringState !== null
+      )
+    ) {
 
-    let aiJitter =
-      getMovingAmbientJitter(
-        aiPosition,
-        this.t
-      );
+      this.t += 0.05;
+    }
+
+  let humanCanUseMotion =
+    viewerState !== "STAYING"
+    ||
+    this.humanGatheringState !== null;
+
+  let aiCanUseMotion =
+    viewerState !== "STAYING"
+    ||
+    this.aiGatheringState !== null;
+
+  let humanJitter =
+    humanCanUseMotion
+      ? getMovingAmbientJitter(
+          humanPosition,
+          this.t,
+          viewerState === "STAYING"
+        )
+      : { x: 0, y: 0 };
+
+  let aiJitter =
+    aiCanUseMotion
+      ? getMovingAmbientJitter(
+          aiPosition,
+          this.t,
+          viewerState === "STAYING"
+        )
+      : { x: 0, y: 0 };
 
     this.humanJitterX = humanJitter.x;
     this.humanJitterY = humanJitter.y;
     this.aiJitterX = aiJitter.x;
     this.aiJitterY = aiJitter.y;
+
+    if (
+      viewerState === "STAYING"
+      &&
+      this.humanGatheringState !== null
+    ) {
+
+      updateGatheringState(
+        this.humanGatheringState,
+        this,
+        "human",
+        millis()
+      );
+    }
+
+    if (
+      viewerState === "STAYING"
+      &&
+      this.aiGatheringState !== null
+    ) {
+
+      updateGatheringState(
+        this.aiGatheringState,
+        this,
+        "ai",
+        millis()
+      );
+    }
   }
 
 
@@ -1668,6 +2154,12 @@ class TraceSource {
       );
 
 
+    let aiPosition =
+      getSourceDisplayPosition(
+        this,
+        "ai"
+      );
+
     fill(
       AI_TEST_COLOR[0],
       AI_TEST_COLOR[1],
@@ -1679,19 +2171,27 @@ class TraceSource {
     rect(
 
       round(
-        this.aiAmbientPosition.x
+        aiPosition.x
         +
-        this.aiJitterX
-        +
-        aiOffsetX
+        (
+          aiPosition.isGathering
+          ||
+          aiPosition.isFrozen
+            ? 0
+            : aiOffsetX
+        )
       ),
 
       round(
-        this.aiAmbientPosition.y
+        aiPosition.y
         +
-        this.aiJitterY
-        +
-        aiOffsetY
+        (
+          aiPosition.isGathering
+          ||
+          aiPosition.isFrozen
+            ? 0
+            : aiOffsetY
+        )
       ),
 
       round(
@@ -1761,6 +2261,12 @@ class TraceSource {
       );
 
 
+    let humanPosition =
+      getSourceDisplayPosition(
+        this,
+        "human"
+      );
+
     fill(
       HUMAN_TEST_COLOR[0],
       HUMAN_TEST_COLOR[1],
@@ -1772,19 +2278,27 @@ class TraceSource {
     rect(
 
       round(
-        this.humanAmbientPosition.x
+        humanPosition.x
         +
-        this.humanJitterX
-        +
-        humanOffsetX
+        (
+          humanPosition.isGathering
+          ||
+          humanPosition.isFrozen
+            ? 0
+            : humanOffsetX
+        )
       ),
 
       round(
-        this.humanAmbientPosition.y
+        humanPosition.y
         +
-        this.humanJitterY
-        +
-        humanOffsetY
+        (
+          humanPosition.isGathering
+          ||
+          humanPosition.isFrozen
+            ? 0
+            : humanOffsetY
+        )
       ),
 
       round(
@@ -2548,6 +3062,17 @@ class ResidualImprint {
     if (
       this.active
     ) {
+
+      // Node 2C hides only the legacy active synthetic visual.
+      // Its imprint continues to grow, freeze, decay, and feed carry/residual.
+      if (
+        viewerState === "STAYING"
+      ) {
+
+        pop();
+
+        return;
+      }
 
       this.displayLive();
 
@@ -3523,6 +4048,19 @@ class TraceFragment {
 
   display() {
 
+    // Node 2C hides only current-stop synthetic deposits while STAYING.
+    // Their data still exists for the unchanged leave/carry/residual lifecycle.
+    if (
+      viewerState === "STAYING"
+      &&
+      !this.settled
+      &&
+      !this.carried
+    ) {
+
+      return;
+    }
+
     let inLeaveMotionHold =
 
       leaveCaptureFrames > 0
@@ -3766,6 +4304,11 @@ function beginNewStop() {
   // Distance answers only which existing sources belong to this stop.
   // Future gathering/target behavior is intentionally not connected here.
   buildCurrentStopSelection();
+
+
+  initializeGatheringForStop(
+    millis()
+  );
 
 
   currentImprint =
