@@ -50,6 +50,8 @@ const CARRY_HUMAN_RATIO = 0.30;
 const CARRY_SOURCE_MODE_MIXED = "mixed";
 const CARRY_SOURCE_MODE_AI = "ai";
 const CARRY_SOURCE_MODE_HUMAN = "human";
+const CARRY_CLUSTER_RATIO = 0.18;
+const CARRY_EDGE_NEIGHBOR_RADIUS = 42;
 
 const RESIDUAL_SOURCE_OFFSET = 2.5;
 const FRAGMENT_SOURCE_OFFSET = 1.5;
@@ -5321,6 +5323,11 @@ class TraceFragment {
 
     this.carryT =
       random(1000);
+
+    this.carryClusterAnchorOffsetX = 0;
+    this.carryClusterAnchorOffsetY = 0;
+    this.carryClusterLocalOffsetX = 0;
+    this.carryClusterLocalOffsetY = 0;
   }
 
 
@@ -5537,7 +5544,11 @@ class TraceFragment {
 
         +
 
-        this.bodyOffsetX
+        this.carryClusterAnchorOffsetX
+
+        +
+
+        this.carryClusterLocalOffsetX
 
         +
 
@@ -5550,7 +5561,11 @@ class TraceFragment {
 
         +
 
-        this.bodyOffsetY
+        this.carryClusterAnchorOffsetY
+
+        +
+
+        this.carryClusterLocalOffsetY
 
         +
 
@@ -6065,8 +6080,25 @@ class TraceFragment {
 // ==================================================
 
 function getIncomingCarryMergeTarget(
-  fragment
+  fragment,
+  clusterAnchor = null
 ) {
+
+  if (
+    clusterAnchor !== null
+  ) {
+
+    return {
+      x:
+        clusterAnchor.x
+        +
+        fragment.carryClusterLocalOffsetX,
+      y:
+        clusterAnchor.y
+        +
+        fragment.carryClusterLocalOffsetY
+    };
+  }
 
   let identityKey =
     fragment.originSourceId
@@ -6104,6 +6136,48 @@ function getIncomingCarryMergeTarget(
 
 function initializeIncomingCarryMerge() {
 
+  let incomingCarryFragments =
+    fragments.filter(
+      (fragment) =>
+        fragment.carried
+        &&
+        fragment.incomingCarryMerge === null
+    );
+
+  if (
+    incomingCarryFragments.length === 0
+  ) {
+
+    return;
+  }
+
+  let clusterAnchor = {
+    x:
+      stopX
+      +
+      map(
+        getStableUnit(
+          "carry-merge-anchor:" + currentStopId + ":x"
+        ),
+        0,
+        1,
+        -GATHER_TARGET_RX * 0.45,
+        GATHER_TARGET_RX * 0.45
+      ),
+    y:
+      stopY
+      +
+      map(
+        getStableUnit(
+          "carry-merge-anchor:" + currentStopId + ":y"
+        ),
+        0,
+        1,
+        -GATHER_TARGET_RY * 0.45,
+        GATHER_TARGET_RY * 0.45
+      )
+  };
+
   for (
     let i = 0;
     i < fragments.length;
@@ -6113,15 +6187,18 @@ function initializeIncomingCarryMerge() {
     let fragment = fragments[i];
 
     if (
-      !fragment.carried
-      ||
-      fragment.incomingCarryMerge !== null
+      !incomingCarryFragments.includes(
+        fragment
+      )
     ) {
 
       continue;
     }
 
-    let target = getIncomingCarryMergeTarget(fragment);
+    let target = getIncomingCarryMergeTarget(
+      fragment,
+      clusterAnchor
+    );
 
     fragment.stopId = currentStopId;
 
@@ -6407,6 +6484,243 @@ function resolveCarrySourceIdentity(fragment) {
   };
 }
 
+function selectCarryCluster(
+  candidates,
+  targetCount,
+  stopId
+) {
+
+  if (
+    candidates.length === 0
+    ||
+    targetCount <= 0
+  ) {
+
+    return [];
+  }
+
+  let remaining = candidates.slice();
+  let selected = [];
+
+  let edgeCandidates =
+    getCarryEdgeCandidates(
+      candidates,
+      stopId
+    );
+
+  let edgeSeedIndex = floor(
+    getStableUnit(
+      "carry-cluster-seed:" + stopId
+    )
+    *
+    edgeCandidates.length
+  );
+
+  let seedIndex =
+    remaining.indexOf(
+      edgeCandidates[edgeSeedIndex]
+    );
+
+  selected.push(
+    remaining.splice(
+      seedIndex,
+      1
+    )[0]
+  );
+
+  while (
+    selected.length < targetCount
+    &&
+    remaining.length > 0
+  ) {
+
+    let bestIndex = 0;
+    let bestDistance = Infinity;
+    let bestTie = Infinity;
+
+    for (
+      let candidateIndex = 0;
+      candidateIndex < remaining.length;
+      candidateIndex++
+    ) {
+
+      let candidate =
+        remaining[candidateIndex];
+
+      let nearestDistance = Infinity;
+
+      for (
+        let selectedIndex = 0;
+        selectedIndex < selected.length;
+        selectedIndex++
+      ) {
+
+        let selectedSource =
+          selected[selectedIndex];
+
+        let candidateDistance = dist(
+          candidate.x,
+          candidate.y,
+          selectedSource.x,
+          selectedSource.y
+        );
+
+        nearestDistance = min(
+          nearestDistance,
+          candidateDistance
+        );
+      }
+
+      let tie = getStableUnit(
+        "carry-cluster-tie:"
+        + stopId
+        + ":"
+        + candidateIndex
+      );
+
+      if (
+        nearestDistance < bestDistance
+        ||
+        (
+          abs(nearestDistance - bestDistance) < 0.001
+          &&
+          tie < bestTie
+        )
+      ) {
+
+        bestIndex = candidateIndex;
+        bestDistance = nearestDistance;
+        bestTie = tie;
+      }
+    }
+
+    selected.push(
+      remaining.splice(
+        bestIndex,
+        1
+      )[0]
+    );
+  }
+
+  return selected;
+}
+
+function getCarryEdgeCandidates(
+  candidates,
+  stopId
+) {
+
+  if (
+    candidates.length <= 1
+  ) {
+
+    return candidates.slice();
+  }
+
+  let centerX = 0;
+  let centerY = 0;
+
+  for (
+    let i = 0;
+    i < candidates.length;
+    i++
+  ) {
+
+    centerX += candidates[i].x;
+    centerY += candidates[i].y;
+  }
+
+  centerX /= candidates.length;
+  centerY /= candidates.length;
+
+  let scored = [];
+
+  for (
+    let i = 0;
+    i < candidates.length;
+    i++
+  ) {
+
+    let candidate = candidates[i];
+    let neighbourCount = 0;
+
+    for (
+      let j = 0;
+      j < candidates.length;
+      j++
+    ) {
+
+      if (
+        i === j
+      ) {
+
+        continue;
+      }
+
+      if (
+        dist(
+          candidate.x,
+          candidate.y,
+          candidates[j].x,
+          candidates[j].y
+        )
+        <=
+        CARRY_EDGE_NEIGHBOR_RADIUS
+      ) {
+
+        neighbourCount++;
+      }
+    }
+
+    scored.push({
+      candidate,
+      neighbourCount,
+      radialDistance: dist(
+        candidate.x,
+        candidate.y,
+        centerX,
+        centerY
+      ),
+      stableValue: getStableUnit(
+        "carry-edge:" + stopId + ":" + i
+      )
+    });
+  }
+
+  scored.sort(
+    (a, b) => {
+      if (
+        a.neighbourCount !== b.neighbourCount
+      ) {
+
+        return a.neighbourCount - b.neighbourCount;
+      }
+
+      if (
+        a.radialDistance !== b.radialDistance
+      ) {
+
+        return b.radialDistance - a.radialDistance;
+      }
+
+      return a.stableValue - b.stableValue;
+    }
+  );
+
+  let edgeCount = max(
+    1,
+    ceil(
+      candidates.length * 0.28
+    )
+  );
+
+  return scored
+    .slice(0, edgeCount)
+    .map(
+      (entry) => entry.candidate
+    );
+}
+
 function handleLeaveStop() {
 
   let candidates = [];
@@ -6491,70 +6805,27 @@ function handleLeaveStop() {
   // =================================================
 
   let carryCount =
+    candidates.length > 0
+      ? max(
+          1,
+          round(
+            candidates.length
+            *
+            CARRY_CLUSTER_RATIO
+          )
+        )
+      : 0;
 
-    currentStopFrames
-    <=
-    DECAY_TRIGGER_FRAMES
+  carryCount = min(
+    carryCount,
+    candidates.length
+  );
 
-      ?
-
-      floor(
-
-        currentStopFrames
-
-        /
-
-        DECAY_TRIGGER_FRAMES
-
-        *
-
-        CARRY_BASE
-      )
-
-      :
-
-      CARRY_BASE
-
-      +
-
-      floor(
-
-        currentStopFrames
-
-        /
-
-        CARRY_STEP_FRAMES
-      );
-
-
-  carryCount =
-
-    constrain(
+  let carryCluster =
+    selectCarryCluster(
+      candidates,
       carryCount,
-      0,
-      CARRY_MAX_PER_STOP
-    );
-
-
-  carryCount =
-
-    min(
-      carryCount,
-      candidates.length
-    );
-
-
-  // Preserve the original calculated carry amount, then add the
-  // configurable extra cloud fragments without exceeding candidates.
-  carryCount +=
-    CARRY_EXTRA_COUNT;
-
-
-  carryCount =
-
-    min(
-      carryCount,
-      candidates.length
+      currentStopId
     );
 
 
@@ -6562,23 +6833,55 @@ function handleLeaveStop() {
   // CARRY A SMALL PART
   // =================================================
 
+  let replacedContributionIndices = [];
+  let carryClusterCenterX = 0;
+  let carryClusterCenterY = 0;
+
   for (
     let i = 0;
-    i < carryCount;
+    i < carryCluster.length;
     i++
   ) {
 
-    let index =
+    carryClusterCenterX += carryCluster[i].x;
+    carryClusterCenterY += carryCluster[i].y;
+  }
 
-      floor(
-        random(
-          candidates.length
-        )
-      );
+  if (
+    carryCluster.length > 0
+  ) {
 
+    carryClusterCenterX /= carryCluster.length;
+    carryClusterCenterY /= carryCluster.length;
+  }
+
+  let sharedCarryT =
+    carryCluster.length > 0
+      ? carryCluster[0].carryT
+      : 0;
+
+  for (
+    let i = 0;
+    i < carryCluster.length;
+    i++
+  ) {
 
     let chosen =
-      candidates[index];
+      carryCluster[i];
+
+    chosen.carryClusterAnchorOffsetX =
+      carryClusterCenterX - mouseX;
+
+    chosen.carryClusterAnchorOffsetY =
+      carryClusterCenterY - mouseY;
+
+    chosen.carryClusterLocalOffsetX =
+      chosen.x - carryClusterCenterX;
+
+    chosen.carryClusterLocalOffsetY =
+      chosen.y - carryClusterCenterY;
+
+    chosen.carryT = sharedCarryT;
 
 
     // ----------------------------------------------
@@ -6598,6 +6901,8 @@ function handleLeaveStop() {
       handoff !== undefined
     ) {
 
+      let matchedContributionIndex = -1;
+
       for (
         let contributionIndex = 0;
         contributionIndex < handoff.contributions.length;
@@ -6610,8 +6915,65 @@ function handleLeaveStop() {
           chosen
         ) {
 
-          handoff.contributions[contributionIndex].replacedByCarry = true;
+          matchedContributionIndex = contributionIndex;
+          break;
         }
+      }
+
+      if (
+        matchedContributionIndex < 0
+      ) {
+
+        let nearestDistance = Infinity;
+
+        for (
+          let contributionIndex = 0;
+          contributionIndex < handoff.contributions.length;
+          contributionIndex++
+        ) {
+
+          let contribution =
+            handoff.contributions[contributionIndex];
+
+          if (
+            contribution.replacedByCarry
+            ||
+            replacedContributionIndices.includes(
+              contributionIndex
+            )
+          ) {
+
+            continue;
+          }
+
+          let contributionDistance = dist(
+            chosen.x,
+            chosen.y,
+            contribution.x,
+            contribution.y
+          );
+
+          if (
+            contributionDistance < nearestDistance
+          ) {
+
+            matchedContributionIndex = contributionIndex;
+            nearestDistance = contributionDistance;
+          }
+        }
+      }
+
+      if (
+        matchedContributionIndex >= 0
+      ) {
+
+        handoff.contributions[
+          matchedContributionIndex
+        ].replacedByCarry = true;
+
+        replacedContributionIndices.push(
+          matchedContributionIndex
+        );
       }
     }
 
@@ -6642,10 +7004,6 @@ function handleLeaveStop() {
     }
 
 
-    candidates.splice(
-      index,
-      1
-    );
   }
 
 
@@ -6658,6 +7016,13 @@ function handleLeaveStop() {
       i < candidates.length;
       i++
     ) {
+
+    if (
+      candidates[i].carried
+    ) {
+
+      continue;
+    }
 
     candidates[i].shadowMember = false;
 
