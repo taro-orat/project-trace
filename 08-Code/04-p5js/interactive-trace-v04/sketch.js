@@ -2935,7 +2935,6 @@ async function setup() {
       intensity: 0.35,
       instability: 0.75,
       persistence: 0.40,
-      fragmentation: 0.80,
       distance: 0.60,
       uncertainty: 0.70
     };
@@ -2944,7 +2943,6 @@ async function setup() {
       intensity: 0.80,
       instability: 0.30,
       persistence: 0.85,
-      fragmentation: 0.35,
       distance: 0.45,
       uncertainty: 0.25
     };

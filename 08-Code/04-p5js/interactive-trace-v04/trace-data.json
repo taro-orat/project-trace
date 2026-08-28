@@ -14,7 +14,6 @@
     "intensity": 0.72,
     "instability": 0.68,
     "persistence": 0.61,
-    "fragmentation": 0.42,
     "distance": 0.83,
     "uncertainty": 0.24
   },
@@ -23,7 +22,6 @@
     "intensity": 0.88,
     "instability": 0.41,
     "persistence": 0.27,
-    "fragmentation": 0.72,
     "distance": 0.88,
     "uncertainty": 0.1
   }
