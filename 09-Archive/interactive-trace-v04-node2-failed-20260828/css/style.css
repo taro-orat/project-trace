@@ -1,0 +1,16 @@
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: #ffffff;
+}
+
+canvas {
+  display: block;
+  margin: 0;
+  padding: 0;
+
+  /* 非常重要：不要让 CSS 改变 canvas 尺寸 */
+  width: 800px !important;
+  height: 600px !important;
+}

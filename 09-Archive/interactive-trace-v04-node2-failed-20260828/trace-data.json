@@ -1,0 +1,30 @@
+{
+  "memory": "小时候很喜欢玩抽卡游戏",
+
+  "constraints": {
+    "creative_lock": [
+      "金色传说"
+    ],
+    "must_avoid": [
+      "长得比较冰冷的数字"
+    ]
+  },
+
+  "ai_parameters": {
+    "intensity": 0.72,
+    "instability": 0.68,
+    "persistence": 0.61,
+    "fragmentation": 0.42,
+    "distance": 0.7,
+    "uncertainty": 0.24
+  },
+
+  "human_parameters": {
+    "intensity": 0.88,
+    "instability": 0.41,
+    "persistence": 0.27,
+    "fragmentation": 0.72,
+    "distance": 0.88,
+    "uncertainty": 0.1
+  }
+}
