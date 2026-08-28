@@ -54,7 +54,10 @@ const CARRY_SOURCE_MODE_HUMAN = "human";
 const RESIDUAL_SOURCE_OFFSET = 2.5;
 const FRAGMENT_SOURCE_OFFSET = 1.5;
 
-const SOURCE_COUNT = 300;
+const SOURCE_COUNT = 432;
+const AMBIENT_GRID_COLUMNS = 24;
+const AMBIENT_GRID_ROWS = 18;
+const AMBIENT_GRID_JITTER = 0.28;
 
 let nextHumanSourceNumber = 1;
 let nextAISourceNumber = 1;
@@ -130,6 +133,206 @@ function getParamsForSourceType(
 }
 
 
+function getStableAmbientPosition(
+  sourceId,
+  canvasWidth,
+  canvasHeight
+) {
+
+  let hash = 17;
+
+  for (
+    let i = 0;
+    i < sourceId.length;
+    i++
+  ) {
+
+    hash =
+      (
+        hash * 31
+        +
+        sourceId.charCodeAt(i)
+      )
+      %
+      100000;
+  }
+
+  let sourceNumber =
+    max(
+      1,
+      parseInt(
+        sourceId.slice(-6),
+        10
+      )
+    )
+    -
+    1;
+
+  let column =
+    sourceNumber % AMBIENT_GRID_COLUMNS;
+
+  let row =
+    floor(
+      sourceNumber /
+      AMBIENT_GRID_COLUMNS
+    )
+    %
+    AMBIENT_GRID_ROWS;
+
+  let jitterX =
+    (
+      (hash % 1000) / 1000
+      -
+      0.5
+    )
+    *
+    AMBIENT_GRID_JITTER;
+
+  let jitterY =
+    (
+      (
+        floor(hash / 1000)
+        %
+        1000
+      )
+      /
+      1000
+      -
+      0.5
+    )
+    *
+    AMBIENT_GRID_JITTER;
+
+  return {
+    x:
+      (
+        column
+        +
+        0.5
+        +
+        jitterX
+      )
+      *
+      canvasWidth
+      /
+      AMBIENT_GRID_COLUMNS,
+
+    y:
+      (
+        row
+        +
+        0.5
+        +
+        jitterY
+      )
+      *
+      canvasHeight
+      /
+      AMBIENT_GRID_ROWS
+  };
+}
+
+
+function getAmbientPositionForSource(
+  source,
+  sourceType
+) {
+
+  return sourceType === "human"
+    ? source.humanAmbientPosition
+    : source.aiAmbientPosition;
+}
+
+
+function getMovingAmbientJitter(
+  position,
+  timeValue
+) {
+
+  if (
+    leaveCaptureFrames !== 0
+    ||
+    (
+      viewerState !== "MOVING"
+      &&
+      leavePulse <= 0
+    )
+  ) {
+
+    return { x: 0, y: 0 };
+  }
+
+  let fieldDistance =
+    viewerFieldDistance(
+      position.x,
+      position.y,
+      MOVEMENT_FIELD_SCALE
+    );
+
+  if (
+    fieldDistance >= 1
+  ) {
+
+    return { x: 0, y: 0 };
+  }
+
+  let proximity =
+    1 - fieldDistance;
+
+  let speedStrength =
+    constrain(
+      viewerSpeed / 12,
+      0,
+      1
+    );
+
+  let strength =
+    2
+    +
+    proximity * 3
+    +
+    speedStrength * 2;
+
+  if (
+    leavePulse > 0
+  ) {
+
+    strength +=
+      2
+      *
+      (
+        leavePulse
+        /
+        LEAVE_PULSE_FRAMES
+      );
+  }
+
+  return {
+    x:
+      map(
+        noise(timeValue),
+        0,
+        1,
+        -strength,
+        strength
+      )
+      +
+      viewerDX * 0.04,
+
+    y:
+      map(
+        noise(timeValue + 1000),
+        0,
+        1,
+        -strength,
+        strength
+      )
+      +
+      viewerDY * 0.04
+  };
+}
+
+
 function validateSourceIdentities() {
 
   let identities = [];
@@ -193,6 +396,11 @@ function validateSourceIdentities() {
   console.log(
     "AI logical sources:",
     aiCount
+  );
+
+  console.log(
+    "Total logical ambient sources:",
+    identities.length
   );
 
   console.log(
@@ -413,6 +621,8 @@ const FRAGMENT_DECAY_TIME = 1800;
 let sources =
   new Array(SOURCE_COUNT);
 
+let ambientPerformanceLogged = false;
+
 let fragments = [];
 
 let imprints = [];
@@ -591,6 +801,25 @@ async function setup() {
 function draw() {
 
   background(255);
+
+  if (
+    !ambientPerformanceLogged
+    &&
+    frameCount >= 120
+  ) {
+
+    console.log(
+      "Ambient performance:",
+      "legacy slots =",
+      sources.length,
+      "logical sources =",
+      sources.length * 2,
+      "FPS =",
+      round(frameRate())
+    );
+
+    ambientPerformanceLogged = true;
+  }
 
 
   previousViewerState =
@@ -934,6 +1163,20 @@ class TraceSource {
     this.aiSource =
       createSourceIdentity("ai");
 
+    this.humanAmbientPosition =
+      getStableAmbientPosition(
+        this.humanSource.sourceId,
+        width,
+        height
+      );
+
+    this.aiAmbientPosition =
+      getStableAmbientPosition(
+        this.aiSource.sourceId,
+        width,
+        height
+      );
+
 
     this.w =
       random(3, 9);
@@ -953,6 +1196,10 @@ class TraceSource {
 
     this.jitterX = 0;
     this.jitterY = 0;
+    this.humanJitterX = 0;
+    this.humanJitterY = 0;
+    this.aiJitterX = 0;
+    this.aiJitterY = 0;
   }
 
 
@@ -965,121 +1212,64 @@ class TraceSource {
     this.jitterX = 0;
     this.jitterY = 0;
 
+    let humanPosition =
+      getAmbientPositionForSource(
+        this,
+        "human"
+      );
 
-    // ----------------------------------------------
-    // leave hold 期间
-    // 不立即启动环境痕迹扰动
-    // ----------------------------------------------
+    let aiPosition =
+      getAmbientPositionForSource(
+        this,
+        "ai"
+      );
 
-    if (
-
+    let canMoveAmbient =
       leaveCaptureFrames === 0
-
       &&
-
       (
         viewerState === "MOVING"
         ||
         leavePulse > 0
-      )
+      );
 
+    if (
+      canMoveAmbient
+      &&
+      (
+        viewerFieldDistance(
+          humanPosition.x,
+          humanPosition.y,
+          MOVEMENT_FIELD_SCALE
+        ) < 1
+        ||
+        viewerFieldDistance(
+          aiPosition.x,
+          aiPosition.y,
+          MOVEMENT_FIELD_SCALE
+        ) < 1
+      )
     ) {
 
-      let fieldDistance =
-
-        viewerFieldDistance(
-          this.x,
-          this.y,
-          MOVEMENT_FIELD_SCALE
-        );
-
-
-      if (
-        fieldDistance < 1
-      ) {
-
-        this.t +=
-          0.05;
-
-
-        let proximity =
-          1 - fieldDistance;
-
-
-        let speedStrength =
-
-          constrain(
-            viewerSpeed / 12,
-            0,
-            1
-          );
-
-
-        let strength =
-
-          2
-
-          +
-
-          proximity * 3
-
-          +
-
-          speedStrength * 2;
-
-
-        if (
-          leavePulse > 0
-        ) {
-
-          strength +=
-
-            2
-
-            *
-
-            (
-              leavePulse
-              /
-              LEAVE_PULSE_FRAMES
-            );
-        }
-
-
-        this.jitterX =
-
-          map(
-            noise(this.t),
-            0,
-            1,
-            -strength,
-            strength
-          );
-
-
-        this.jitterY =
-
-          map(
-            noise(
-              this.t
-              +
-              1000
-            ),
-            0,
-            1,
-            -strength,
-            strength
-          );
-
-
-        this.jitterX +=
-          viewerDX * 0.04;
-
-
-        this.jitterY +=
-          viewerDY * 0.04;
-      }
+      this.t += 0.05;
     }
+
+    let humanJitter =
+      getMovingAmbientJitter(
+        humanPosition,
+        this.t
+      );
+
+    let aiJitter =
+      getMovingAmbientJitter(
+        aiPosition,
+        this.t
+      );
+
+    this.humanJitterX = humanJitter.x;
+    this.humanJitterY = humanJitter.y;
+    this.aiJitterX = aiJitter.x;
+    this.aiJitterY = aiJitter.y;
   }
 
 
@@ -1157,17 +1347,17 @@ class TraceSource {
     rect(
 
       round(
-        this.x
+        this.aiAmbientPosition.x
         +
-        this.jitterX
+        this.aiJitterX
         +
         aiOffsetX
       ),
 
       round(
-        this.y
+        this.aiAmbientPosition.y
         +
-        this.jitterY
+        this.aiJitterY
         +
         aiOffsetY
       ),
@@ -1250,17 +1440,17 @@ class TraceSource {
     rect(
 
       round(
-        this.x
+        this.humanAmbientPosition.x
         +
-        this.jitterX
+        this.humanJitterX
         +
         humanOffsetX
       ),
 
       round(
-        this.y
+        this.humanAmbientPosition.y
         +
-        this.jitterY
+        this.humanJitterY
         +
         humanOffsetY
       ),
