@@ -76,6 +76,11 @@ const GATHER_TARGET_RX = 58;
 const GATHER_TARGET_RY = 74;
 const GHOST_MAX_VISUAL_RATIO = 0.38;
 const GHOST_MICRO_MOTION_PX = 0.35;
+const DEBUG_LEAVING_HANDOFF = false;
+const LEAVING_HANDOFF_MICRO_MOTION_PX = 0.35;
+const AMBIENT_RECOVERY_DURATION_MS = 15000;
+const AMBIENT_RECOVERY_DELAY_MAX_MS = 2000;
+const DEBUG_AMBIENT_RECOVERY = false;
 
 let nextHumanSourceNumber = 1;
 let nextAISourceNumber = 1;
@@ -472,6 +477,636 @@ function getSourceDisplayPosition(
     isGathering: false,
     isFrozen: false
   };
+}
+
+
+function getAmbientSourceAlpha(
+  sourceType
+) {
+
+  return map(
+    getParamsForSourceType(sourceType).intensity,
+    0,
+    1,
+    8,
+    60
+  );
+}
+
+
+function isSourceInLeavingHandoff(
+  source,
+  sourceType
+) {
+
+  if (
+    leavingHandoffStopId === null
+    ||
+    viewerState === "STAYING"
+    ||
+    currentStopSelection === null
+    ||
+    currentStopSelection.stopId !== leavingHandoffStopId
+  ) {
+
+    return false;
+  }
+
+  let selectedIds =
+    sourceType === "human"
+      ? currentStopSelection.humanSourceIds
+      : currentStopSelection.aiSourceIds;
+
+  let sourceId =
+    sourceType === "human"
+      ? source.humanSource.sourceId
+      : source.aiSource.sourceId;
+
+  return selectedIds.includes(sourceId);
+}
+
+
+function getAmbientGhostState(
+  source,
+  sourceType
+) {
+
+  return sourceType === "human"
+    ? source.humanGhostState
+    : source.aiGhostState;
+}
+
+
+function setAmbientGhostState(
+  source,
+  sourceType,
+  state
+) {
+
+  if (
+    sourceType === "human"
+  ) {
+
+    source.humanGhostState = state;
+  }
+
+  else {
+
+    source.aiGhostState = state;
+  }
+}
+
+
+function isAmbientSourceSelectable(
+  source,
+  sourceType
+) {
+
+  let ghostState =
+    getAmbientGhostState(
+      source,
+      sourceType
+    );
+
+  return ghostState === null;
+}
+
+
+function getGhostRecoveryDelay(
+  sourceId,
+  stopId
+) {
+
+  return getStableUnit(
+    sourceId + ":" + stopId + ":recovery"
+  ) * AMBIENT_RECOVERY_DELAY_MAX_MS;
+}
+
+
+function createAmbientGhostState(
+  source,
+  sourceType,
+  gatheringState
+) {
+
+  let identity =
+    sourceType === "human"
+      ? source.humanSource
+      : source.aiSource;
+
+  let initialMicroX =
+    sin(
+      millis() * 0.0008
+      +
+      gatheringState.ghostPhase
+    )
+    *
+    GHOST_MICRO_MOTION_PX;
+
+  let initialMicroY =
+    cos(
+      millis() * 0.0009
+      +
+      gatheringState.ghostPhase
+    )
+    *
+    GHOST_MICRO_MOTION_PX;
+
+  return {
+    sourceId: identity.sourceId,
+    sourceType,
+    originSourceId: identity.sourceId,
+    stopId: currentStopId,
+    x: gatheringState.startPosition.x,
+    y: gatheringState.startPosition.y,
+    width: source.w,
+    height: source.h,
+    revealProgress: getGhostRevealProgress(gatheringState),
+    recoveryStartTime: millis(),
+    recoveryDelay: getGhostRecoveryDelay(
+      identity.sourceId,
+      currentStopId
+    ),
+    recoveryProgress: 0,
+    motionPhase: gatheringState.ghostPhase,
+    directionAngle: atan2(
+      gatheringState.target.y - gatheringState.startPosition.y,
+      gatheringState.target.x - gatheringState.startPosition.x
+    ),
+    initialMotionOffsetX: initialMicroX,
+    initialMotionOffsetY: initialMicroY
+  };
+}
+
+
+function captureAmbientGhostStates() {
+
+  if (
+    currentStopSelection === null
+  ) {
+
+    return;
+  }
+
+  for (
+    let i = 0;
+    i < sources.length;
+    i++
+  ) {
+
+    let source = sources[i];
+
+    if (
+      source.humanGatheringState !== null
+    ) {
+
+      source.humanGhostState =
+        createAmbientGhostState(
+          source,
+          "human",
+          source.humanGatheringState
+        );
+    }
+
+    if (
+      source.aiGatheringState !== null
+    ) {
+
+      source.aiGhostState =
+        createAmbientGhostState(
+          source,
+          "ai",
+          source.aiGatheringState
+        );
+    }
+  }
+}
+
+
+function updateAmbientGhostRecovery(
+  source,
+  sourceType,
+  now
+) {
+
+  let ghostState =
+    getAmbientGhostState(
+      source,
+      sourceType
+    );
+
+  if (
+    ghostState === null
+    ||
+    viewerState === "STAYING"
+  ) {
+
+    return;
+  }
+
+  let elapsed =
+    now - ghostState.recoveryStartTime;
+
+  ghostState.recoveryProgress =
+    constrain(
+      (
+        elapsed - ghostState.recoveryDelay
+      )
+      /
+      AMBIENT_RECOVERY_DURATION_MS,
+      0,
+      1
+    );
+}
+
+
+function getAmbientGhostMicroOffset(
+  ghostState
+) {
+
+  let elapsed =
+    max(
+      0,
+      millis() - ghostState.recoveryStartTime
+    );
+
+  let phase =
+    ghostState.motionPhase;
+
+  let currentX =
+    sin(phase + elapsed * 0.0008)
+    *
+    GHOST_MICRO_MOTION_PX;
+
+  let currentY =
+    cos(phase + elapsed * 0.0009)
+    *
+    GHOST_MICRO_MOTION_PX;
+
+  let motionRatio =
+    1 - ghostState.recoveryProgress;
+
+  return {
+    x:
+      lerp(
+        ghostState.initialMotionOffsetX,
+        currentX,
+        ghostState.recoveryProgress
+      ) * motionRatio,
+    y:
+      lerp(
+        ghostState.initialMotionOffsetY,
+        currentY,
+        ghostState.recoveryProgress
+      ) * motionRatio
+  };
+}
+
+
+function drawRecoveringAmbientGhost(
+  source,
+  sourceType
+) {
+
+  let ghostState =
+    getAmbientGhostState(
+      source,
+      sourceType
+    );
+
+  if (
+    ghostState === null
+  ) {
+
+    return;
+  }
+
+  let recoveryProgress =
+    ghostState.recoveryProgress;
+
+  let revealProgress =
+    lerp(
+      ghostState.revealProgress,
+      1,
+      recoveryProgress
+    );
+
+  let normalAmbientPosition =
+    getAmbientPositionForSource(
+      source,
+      sourceType
+    );
+
+  let normalOffset =
+    getAmbientVisualOffset(
+      source,
+      sourceType
+    );
+
+  let renderX =
+    lerp(
+      ghostState.x,
+      normalAmbientPosition.x + normalOffset.x,
+      recoveryProgress
+    );
+
+  let renderY =
+    lerp(
+      ghostState.y,
+      normalAmbientPosition.y + normalOffset.y,
+      recoveryProgress
+    );
+
+  let microOffset =
+    getAmbientGhostMicroOffset(
+      ghostState
+    );
+
+  let ambientAlpha =
+    getAmbientSourceAlpha(sourceType);
+
+  let alpha =
+    lerp(
+      ambientAlpha * GHOST_MAX_VISUAL_RATIO,
+      ambientAlpha,
+      recoveryProgress
+    );
+
+  let width =
+    source.w * revealProgress;
+
+  let angle =
+    lerp(
+      ghostState.directionAngle,
+      0,
+      recoveryProgress
+    );
+
+  push();
+
+  translate(
+    renderX + microOffset.x,
+    renderY + microOffset.y
+  );
+
+  rotate(angle);
+
+  fill(
+    sourceType === "human"
+      ? HUMAN_TEST_COLOR[0]
+      : AI_TEST_COLOR[0],
+    sourceType === "human"
+      ? HUMAN_TEST_COLOR[1]
+      : AI_TEST_COLOR[1],
+    sourceType === "human"
+      ? HUMAN_TEST_COLOR[2]
+      : AI_TEST_COLOR[2],
+    alpha
+  );
+
+  rect(
+    -source.w / 2 + width / 2,
+    0,
+    width,
+    source.h
+  );
+
+  pop();
+}
+
+
+function finalizeAmbientGhostRecovery() {
+
+  for (
+    let i = 0;
+    i < sources.length;
+    i++
+  ) {
+
+    let source = sources[i];
+
+    if (
+      source.humanGhostState !== null
+      &&
+      source.humanGhostState.recoveryProgress >= 1
+    ) {
+
+      source.humanGhostState = null;
+    }
+
+    if (
+      source.aiGhostState !== null
+      &&
+      source.aiGhostState.recoveryProgress >= 1
+    ) {
+
+      source.aiGhostState = null;
+    }
+  }
+}
+
+
+function captureLeavingVisualState() {
+
+  if (
+    currentStopSelection === null
+  ) {
+
+    return;
+  }
+
+  let contributions = [];
+
+  for (
+    let i = 0;
+    i < sources.length;
+    i++
+  ) {
+
+    let source = sources[i];
+
+    let sourceEntries = [
+      {
+        sourceType: "human",
+        identity: source.humanSource,
+        state: source.humanGatheringState,
+        color: HUMAN_TEST_COLOR
+      },
+      {
+        sourceType: "ai",
+        identity: source.aiSource,
+        state: source.aiGatheringState,
+        color: AI_TEST_COLOR
+      }
+    ];
+
+    for (
+      let entryIndex = 0;
+      entryIndex < sourceEntries.length;
+      entryIndex++
+    ) {
+
+      let entry = sourceEntries[entryIndex];
+
+      if (
+        entry.state === null
+        ||
+        entry.state.stopId !== currentStopId
+      ) {
+
+        continue;
+      }
+
+      contributions.push({
+        sourceId: entry.identity.sourceId,
+        sourceType: entry.sourceType,
+        originSourceId: entry.identity.sourceId,
+        x: entry.state.currentPosition.x,
+        y: entry.state.currentPosition.y,
+        width: source.w,
+        height: source.h,
+        rotation: 0,
+        alpha: getAmbientSourceAlpha(entry.sourceType),
+        visualWeight: 1,
+        color: [
+          entry.color[0],
+          entry.color[1],
+          entry.color[2]
+        ],
+        motionPhase: source.t,
+        motionOffset: { x: 0, y: 0 }
+      });
+    }
+  }
+
+  leavingVisualStates.push({
+    stopId: currentStopId,
+    capturedAt: millis(),
+    age: 0,
+    contributions
+  });
+
+  leavingHandoffStopId = currentStopId;
+
+  if (
+    currentImprint !== null
+  ) {
+
+    currentImprint.suppressLegacyVisualDuringHandoff = true;
+  }
+
+  for (
+    let i = 0;
+    i < fragments.length;
+    i++
+  ) {
+
+    if (
+      fragments[i].stopId === currentStopId
+    ) {
+
+      fragments[i].suppressLegacyVisualDuringHandoff = true;
+    }
+  }
+
+  if (
+    DEBUG_LEAVING_HANDOFF
+  ) {
+
+    console.log(
+      "LEAVE HANDOFF",
+      "Captured contributions:",
+      contributions.length,
+      "Human count:",
+      contributions.filter(
+        (contribution) => contribution.sourceType === "human"
+      ).length,
+      "AI count:",
+      contributions.filter(
+        (contribution) => contribution.sourceType === "ai"
+      ).length,
+      "Residual mapped:",
+      contributions.length,
+      "Carry mapped:",
+      0
+    );
+  }
+}
+
+
+function drawLeavingVisualStates() {
+
+  for (
+    let stateIndex = leavingVisualStates.length - 1;
+    stateIndex >= 0;
+    stateIndex--
+  ) {
+
+    let state = leavingVisualStates[stateIndex];
+    let decay = exp(-state.age / IMPRINT_DECAY_TIME);
+
+    for (
+      let i = 0;
+      i < state.contributions.length;
+      i++
+    ) {
+
+      let contribution = state.contributions[i];
+
+      let motionOffsetX =
+        (
+          sin(
+            contribution.motionPhase
+            +
+            state.age * 0.04
+          )
+          -
+          sin(contribution.motionPhase)
+        )
+        *
+        LEAVING_HANDOFF_MICRO_MOTION_PX;
+
+      let motionOffsetY =
+        (
+          cos(
+            contribution.motionPhase * 1.13
+            +
+            state.age * 0.043
+          )
+          -
+          cos(contribution.motionPhase * 1.13)
+        )
+        *
+        LEAVING_HANDOFF_MICRO_MOTION_PX;
+
+      push();
+
+      translate(
+        contribution.x + motionOffsetX,
+        contribution.y + motionOffsetY
+      );
+
+      rotate(contribution.rotation);
+
+      fill(
+        contribution.color[0],
+        contribution.color[1],
+        contribution.color[2],
+        contribution.alpha * decay
+      );
+
+      rect(
+        0,
+        0,
+        contribution.width,
+        contribution.height
+      );
+
+      pop();
+    }
+
+    state.age++;
+  }
 }
 
 
@@ -1015,6 +1650,11 @@ function buildCurrentStopSelection() {
       );
 
     if (
+      isAmbientSourceSelectable(
+        source,
+        "human"
+      )
+      &&
       dist(
         humanPosition.x,
         humanPosition.y,
@@ -1036,6 +1676,11 @@ function buildCurrentStopSelection() {
     }
 
     if (
+      isAmbientSourceSelectable(
+        source,
+        "ai"
+      )
+      &&
       dist(
         aiPosition.x,
         aiPosition.y,
@@ -1679,6 +2324,9 @@ let currentStopFrames = 0;
 
 let currentImprint = null;
 
+let leavingVisualStates = [];
+let leavingHandoffStopId = null;
+
 // Node 2B: stable source IDs selected once when a stop begins.
 let currentStopSelection = null;
 
@@ -1865,6 +2513,10 @@ function draw() {
     viewerState !== "STAYING"
   ) {
 
+    // Capture the last visible selected-source state before legacy leave logic.
+    captureAmbientGhostStates();
+    captureLeavingVisualState();
+
     handleLeaveStop();
   }
 
@@ -1924,6 +2576,10 @@ function draw() {
 
     sources[i].display();
   }
+
+
+  // Source-level handoff visual; no canvas or bitmap snapshot is used.
+  drawLeavingVisualStates();
 
 
   // Debug-only boundary overlay; selection itself never changes the renderer.
@@ -1989,6 +2645,9 @@ function draw() {
         LEAVE_PULSE_FRAMES;
     }
   }
+
+
+  finalizeAmbientGhostRecovery();
 }
 
 
@@ -2221,6 +2880,8 @@ class TraceSource {
     this.aiGatheringState = null;
     this.humanStayFrozenPosition = null;
     this.aiStayFrozenPosition = null;
+    this.humanGhostState = null;
+    this.aiGhostState = null;
   }
 
 
@@ -2326,6 +2987,18 @@ class TraceSource {
     this.aiJitterX = aiJitter.x;
     this.aiJitterY = aiJitter.y;
 
+    updateAmbientGhostRecovery(
+      this,
+      "human",
+      millis()
+    );
+
+    updateAmbientGhostRecovery(
+      this,
+      "ai",
+      millis()
+    );
+
     if (
       viewerState === "STAYING"
       &&
@@ -2386,6 +3059,11 @@ class TraceSource {
       "ai"
     );
 
+    drawRecoveringAmbientGhost(
+      this,
+      "ai"
+    );
+
 
     let aiSpread =
 
@@ -2430,15 +3108,24 @@ class TraceSource {
         "ai"
       );
 
-    fill(
-      AI_TEST_COLOR[0],
-      AI_TEST_COLOR[1],
-      AI_TEST_COLOR[2],
-      aiAlpha
-    );
+    if (
+      !isSourceInLeavingHandoff(
+        this,
+        "ai"
+      )
+      &&
+      getAmbientGhostState(this, "ai") === null
+    ) {
+
+      fill(
+        AI_TEST_COLOR[0],
+        AI_TEST_COLOR[1],
+        AI_TEST_COLOR[2],
+        aiAlpha
+      );
 
 
-    rect(
+      rect(
 
       round(
         aiPosition.x
@@ -2468,10 +3155,11 @@ class TraceSource {
         this.w
       ),
 
-      round(
-        this.h
-      )
-    );
+        round(
+          this.h
+        )
+      );
+    }
 
 
     // ==================================================
@@ -2494,6 +3182,11 @@ class TraceSource {
       );
 
     drawAmbientGhost(
+      this,
+      "human"
+    );
+
+    drawRecoveringAmbientGhost(
       this,
       "human"
     );
@@ -2542,15 +3235,24 @@ class TraceSource {
         "human"
       );
 
-    fill(
-      HUMAN_TEST_COLOR[0],
-      HUMAN_TEST_COLOR[1],
-      HUMAN_TEST_COLOR[2],
-      humanAlpha
-    );
+    if (
+      !isSourceInLeavingHandoff(
+        this,
+        "human"
+      )
+      &&
+      getAmbientGhostState(this, "human") === null
+    ) {
+
+      fill(
+        HUMAN_TEST_COLOR[0],
+        HUMAN_TEST_COLOR[1],
+        HUMAN_TEST_COLOR[2],
+        humanAlpha
+      );
 
 
-    rect(
+      rect(
 
       round(
         humanPosition.x
@@ -2580,10 +3282,11 @@ class TraceSource {
         this.w
       ),
 
-      round(
-        this.h
-      )
-    );
+        round(
+          this.h
+        )
+      );
+    }
   }
 }
 
@@ -2601,6 +3304,9 @@ class ResidualImprint {
 
     this.x = x;
     this.y = y;
+
+    this.stopId = currentStopId;
+    this.suppressLegacyVisualDuringHandoff = false;
 
 
     this.active = true;
@@ -3320,6 +4026,15 @@ class ResidualImprint {
 
     push();
 
+    if (
+      this.suppressLegacyVisualDuringHandoff
+    ) {
+
+      pop();
+
+      return;
+    }
+
 
     translate(
       this.x,
@@ -3790,6 +4505,8 @@ class TraceFragment {
 
     this.stopId =
       stopId;
+
+    this.suppressLegacyVisualDuringHandoff = false;
 
 
     // Optional provenance scaffold for future source-aware behavior.
@@ -4331,6 +5048,13 @@ class TraceFragment {
       !this.settled
       &&
       !this.carried
+    ) {
+
+      return;
+    }
+
+    if (
+      this.suppressLegacyVisualDuringHandoff
     ) {
 
       return;
