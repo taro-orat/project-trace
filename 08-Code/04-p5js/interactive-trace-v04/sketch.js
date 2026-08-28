@@ -64,7 +64,7 @@ const AMBIENT_GRID_JITTER = 0.28;
 const DISTANCE_MIN_RADIUS = 55;
 const DISTANCE_MAX_RADIUS = 260;
 const DISTANCE_BOUNDARY_WOBBLE = 0.16;
-const DEBUG_DISTANCE_BOUNDARY = true;
+const DEBUG_DISTANCE_BOUNDARY = false;
 const DEBUG_SELECTED_MARKER = false;
 
 // Node 2C: gathering motion only. These values do not alter selection.
@@ -74,6 +74,8 @@ const GATHER_START_WAVE_RATIO = 1.0;
 const GATHER_END_MICRO_MOTION_RATIO = 0.15;
 const GATHER_TARGET_RX = 58;
 const GATHER_TARGET_RY = 74;
+const GHOST_MAX_VISUAL_RATIO = 0.38;
+const GHOST_MICRO_MOTION_PX = 0.35;
 
 let nextHumanSourceNumber = 1;
 let nextAISourceNumber = 1;
@@ -473,6 +475,162 @@ function getSourceDisplayPosition(
 }
 
 
+function getGhostRevealProgress(
+  state
+) {
+
+  let totalDisplacement =
+    dist(
+      state.startPosition.x,
+      state.startPosition.y,
+      state.target.x,
+      state.target.y
+    );
+
+  if (
+    totalDisplacement <= 0.001
+  ) {
+
+    return 1;
+  }
+
+  return constrain(
+    dist(
+      state.startPosition.x,
+      state.startPosition.y,
+      state.currentPosition.x,
+      state.currentPosition.y
+    )
+    /
+    totalDisplacement,
+    0,
+    1
+  );
+}
+
+
+function drawAmbientGhost(
+  source,
+  sourceType
+) {
+
+  if (
+    viewerState !== "STAYING"
+  ) {
+
+    return;
+  }
+
+  let state =
+    sourceType === "human"
+      ? source.humanGatheringState
+      : source.aiGatheringState;
+
+  if (
+    state === null
+    ||
+    state.stopId !== currentStopId
+  ) {
+
+    return;
+  }
+
+  let revealProgress =
+    getGhostRevealProgress(state);
+
+  if (
+    revealProgress <= 0.01
+  ) {
+
+    return;
+  }
+
+  let dx =
+    state.target.x - state.startPosition.x;
+
+  let dy =
+    state.target.y - state.startPosition.y;
+
+  let displacement =
+    sqrt(dx * dx + dy * dy);
+
+  if (
+    displacement <= 0.001
+  ) {
+
+    return;
+  }
+
+  let width =
+    source.w * revealProgress;
+
+  let angle =
+    atan2(dy, dx);
+
+  let ghostPhase =
+    state.ghostPhase;
+
+  let microX =
+    sin(millis() * 0.0008 + ghostPhase)
+    *
+    GHOST_MICRO_MOTION_PX;
+
+  let microY =
+    cos(millis() * 0.0009 + ghostPhase)
+    *
+    GHOST_MICRO_MOTION_PX;
+
+  let params =
+    getParamsForSourceType(sourceType);
+
+  let ambientAlpha =
+    map(
+      params.intensity,
+      0,
+      1,
+      8,
+      60
+    );
+
+  let ghostAlpha =
+    ambientAlpha
+    *
+    GHOST_MAX_VISUAL_RATIO;
+
+  push();
+
+  translate(
+    state.startPosition.x + microX,
+    state.startPosition.y + microY
+  );
+
+  rotate(angle);
+
+  fill(
+    sourceType === "human"
+      ? HUMAN_TEST_COLOR[0]
+      : AI_TEST_COLOR[0],
+    sourceType === "human"
+      ? HUMAN_TEST_COLOR[1]
+      : AI_TEST_COLOR[1],
+    sourceType === "human"
+      ? HUMAN_TEST_COLOR[2]
+      : AI_TEST_COLOR[2],
+    ghostAlpha
+  );
+
+  // Directional trailing strip: only the vacated part is drawn.
+  rect(
+    -source.w / 2 + width / 2,
+    0,
+    width,
+    source.h
+  );
+
+  pop();
+}
+
+
 function getGatheringTarget(
   sourceId,
   stopId
@@ -563,6 +721,7 @@ function initializeGatheringState(
     },
     target,
     gatherDelay: getGatherDelay(identity.sourceId, currentStopId),
+    ghostPhase: getStableUnit(identity.sourceId + ":ghost") * TWO_PI,
     currentPosition: { x: startPosition.x, y: startPosition.y }
   };
 }
@@ -2222,6 +2381,11 @@ class TraceSource {
         60
       );
 
+    drawAmbientGhost(
+      this,
+      "ai"
+    );
+
 
     let aiSpread =
 
@@ -2328,6 +2492,11 @@ class TraceSource {
         8,
         60
       );
+
+    drawAmbientGhost(
+      this,
+      "human"
+    );
 
 
     let humanSpread =
