@@ -52,6 +52,11 @@ const CARRY_SOURCE_MODE_AI = "ai";
 const CARRY_SOURCE_MODE_HUMAN = "human";
 const CARRY_CLUSTER_RATIO = 0.18;
 const CARRY_EDGE_NEIGHBOR_RADIUS = 42;
+const CARRY_PERSISTENCE_DURATION_MIN_MS = 24000;
+const CARRY_PERSISTENCE_DURATION_MAX_MS = 90000;
+const CARRY_PERSISTENCE_DURATION_CURVE = 1.70;
+const CARRY_PERSISTENCE_FADE_RATIO = 0.10;
+const CARRY_DEPTH_SETTLE_BACK_MS = 2500;
 
 const RESIDUAL_SOURCE_OFFSET = 2.5;
 const FRAGMENT_SOURCE_OFFSET = 1.5;
@@ -2642,7 +2647,8 @@ function drawSourcePasses(
   w,
   h,
   alpha,
-  sourceGeometry = null
+  sourceGeometry = null,
+  visualColors = null
 ) {
 
   let aiX = x;
@@ -2673,8 +2679,15 @@ function drawSourcePasses(
     mode === CARRY_SOURCE_MODE_AI
   ) {
 
+    let aiColor =
+      visualColors !== null
+      &&
+      visualColors.ai !== undefined
+        ? visualColors.ai
+        : AI_TEST_COLOR;
+
     drawSourcePass(
-      AI_TEST_COLOR,
+      aiColor,
       aiX,
       aiY,
       w,
@@ -2689,8 +2702,15 @@ function drawSourcePasses(
     mode === CARRY_SOURCE_MODE_HUMAN
   ) {
 
+    let humanColor =
+      visualColors !== null
+      &&
+      visualColors.human !== undefined
+        ? visualColors.human
+        : HUMAN_TEST_COLOR;
+
     drawSourcePass(
-      HUMAN_TEST_COLOR,
+      humanColor,
       humanX,
       humanY,
       w,
@@ -5328,6 +5348,25 @@ class TraceFragment {
     this.carryClusterAnchorOffsetY = 0;
     this.carryClusterLocalOffsetX = 0;
     this.carryClusterLocalOffsetY = 0;
+    this.carryPersistenceStartedAt = null;
+    this.carryPersistenceRank = 1;
+    this.carryPersistenceOpacity = 1;
+    this.carryPersistenceDepleted = false;
+    this.carryVisualBaseAlpha = null;
+    this.carryCurrentVisualAlpha = null;
+    this.carryCurrentVisualWidth = null;
+    this.carryCurrentVisualHeight = null;
+    this.carryOriginalVisualAlpha = null;
+    this.carryDepthSettleStartAlpha = null;
+    this.carryDepthSettleStartedAt = null;
+    this.carryCutVisualWidth = null;
+    this.carryCutVisualHeight = null;
+    this.carryOriginalVisualWidth = null;
+    this.carryOriginalVisualHeight = null;
+    this.carryCutVisualColor = null;
+    this.carryOriginalVisualColor = null;
+    this.carryCurrentVisualColor = null;
+    this.carryVisualSettleNeeded = false;
   }
 
 
@@ -5479,6 +5518,25 @@ class TraceFragment {
         this.incomingCarryMerge = null;
         this.carried = false;
         this.shadowMember = true;
+        this.carryPersistenceStartedAt = null;
+        this.carryPersistenceOpacity = 1;
+        this.carryPersistenceDepleted = false;
+        this.carryPersistenceRank = 1;
+        this.carryVisualBaseAlpha = null;
+        this.carryCurrentVisualAlpha = null;
+        this.carryCurrentVisualWidth = null;
+        this.carryCurrentVisualHeight = null;
+        this.carryOriginalVisualAlpha = null;
+        this.carryDepthSettleStartAlpha = null;
+        this.carryDepthSettleStartedAt = null;
+        this.carryCutVisualWidth = null;
+        this.carryCutVisualHeight = null;
+        this.carryOriginalVisualWidth = null;
+        this.carryOriginalVisualHeight = null;
+        this.carryCutVisualColor = null;
+        this.carryOriginalVisualColor = null;
+        this.carryCurrentVisualColor = null;
+        this.carryVisualSettleNeeded = false;
       }
 
       return;
@@ -5492,6 +5550,18 @@ class TraceFragment {
     if (
       this.carried
     ) {
+
+      this.carryPersistenceOpacity =
+        getCarryPersistenceOpacity(
+          this
+        );
+
+      if (
+        this.carryPersistenceDepleted
+      ) {
+
+        return;
+      }
 
       // ----------------------------------------------
       // hold 期间：
@@ -5786,6 +5856,30 @@ class TraceFragment {
         shadowDepth
       );
 
+    if (
+      this.incomingCarryMerge !== null
+    ) {
+
+      visual = {
+        ...visual,
+        alpha:
+          this.carryCurrentVisualAlpha
+          !== null
+            ? this.carryCurrentVisualAlpha
+            : visual.alpha,
+        sizeMultiplier:
+          this.carryCurrentVisualWidth
+          !== null
+            ? this.carryCurrentVisualWidth / this.w
+            : visual.sizeMultiplier,
+        color:
+          this.carryCurrentVisualColor
+          !== null
+            ? this.carryCurrentVisualColor
+            : visual.color
+      };
+    }
+
     let sourceMode =
       this.sourceType === "human"
         ? CARRY_SOURCE_MODE_HUMAN
@@ -5806,7 +5900,19 @@ class TraceFragment {
       this.w * visual.sizeMultiplier,
       this.h * visual.sizeMultiplier,
       visual.alpha,
-      this
+      this,
+      this.carryCurrentVisualColor === null
+        ? null
+        : {
+            human:
+              this.sourceType === "human"
+                ? this.carryCurrentVisualColor
+                : HUMAN_TEST_COLOR,
+            ai:
+              this.sourceType === "ai"
+                ? this.carryCurrentVisualColor
+                : AI_TEST_COLOR
+          }
     );
   }
 
@@ -5995,50 +6101,46 @@ class TraceFragment {
 
     ) {
 
-      let accumulation =
-
-        1
-
-        -
-
-        exp(
-          -carriedCountThisFrame
-          /
-          70
+      let persistenceOpacity =
+        getCarryPersistenceOpacity(
+          this
         );
 
+      if (
+        persistenceOpacity <= 0
+      ) {
 
-      alpha *=
+        this.carryCurrentVisualAlpha = 0;
 
-        0.55
+        return;
+      }
 
-        +
+      displayW =
+        getCarrySettledVisualDimension(
+          this,
+          "width"
+        );
 
-        accumulation
+      displayH =
+        getCarrySettledVisualDimension(
+          this,
+          "height"
+        );
+
+      alpha =
+        getCarryDepthSettleAlpha(
+          this
+        )
         *
-        0.45;
+        persistenceOpacity;
 
-
-      displayW *=
-
-        1.15
-
-        +
-
-        accumulation
-        *
-        0.50;
-
-
-      displayH *=
-
-        1.10
-
-        +
-
-        accumulation
-        *
-        0.40;
+      this.carryCurrentVisualColor =
+        getCarrySettledVisualColor(
+          this
+        );
+      this.carryCurrentVisualAlpha = alpha;
+      this.carryCurrentVisualWidth = displayW;
+      this.carryCurrentVisualHeight = displayH;
     }
 
 
@@ -6069,7 +6171,21 @@ class TraceFragment {
       displayW,
       displayH,
       alpha,
-      this
+      this,
+      this.carried
+      &&
+      this.carryCurrentVisualColor !== null
+        ? {
+            human:
+              this.carrySourceMode === CARRY_SOURCE_MODE_HUMAN
+                ? this.carryCurrentVisualColor
+                : HUMAN_TEST_COLOR,
+            ai:
+              this.carrySourceMode === CARRY_SOURCE_MODE_AI
+                ? this.carryCurrentVisualColor
+                : AI_TEST_COLOR
+          }
+        : null
     );
   }
 }
@@ -6133,6 +6249,243 @@ function getIncomingCarryMergeTarget(
   };
 }
 
+function getCarryPersistenceOpacity(
+  fragment,
+  now = millis()
+) {
+
+  if (
+    !fragment.carried
+    ||
+    fragment.carryPersistenceStartedAt === null
+    ||
+    fragment.carryPersistenceDepleted
+  ) {
+
+    return fragment.carryPersistenceDepleted
+      ? 0
+      : 1;
+  }
+
+  if (
+    fragment.sourceType !== "human"
+    &&
+    fragment.sourceType !== "ai"
+  ) {
+
+    fragment.carryPersistenceDepleted = true;
+    fragment.carryPersistenceOpacity = 0;
+    return 0;
+  }
+
+  let persistence =
+    getParamsForSourceType(
+      fragment.sourceType
+    ).persistence;
+
+  let clampedPersistence =
+    constrain(
+      persistence,
+      0,
+      1
+    );
+
+  let duration = lerp(
+    CARRY_PERSISTENCE_DURATION_MIN_MS,
+    CARRY_PERSISTENCE_DURATION_MAX_MS,
+    pow(
+      clampedPersistence,
+      CARRY_PERSISTENCE_DURATION_CURVE
+    )
+  );
+
+  let elapsedProgress = constrain(
+    (now - fragment.carryPersistenceStartedAt)
+    /
+    duration,
+    0,
+    1
+  );
+
+  let retentionThreshold =
+    lerp(
+      0.18,
+      0.50,
+      clampedPersistence
+    )
+    *
+    lerp(
+      0.65,
+      1,
+      constrain(
+        fragment.carryPersistenceRank,
+        0,
+        1
+      )
+    );
+
+  let fadeWidth =
+    CARRY_PERSISTENCE_FADE_RATIO;
+
+  let fadeStart = max(
+    0,
+    retentionThreshold - fadeWidth
+  );
+
+  let fadeEnd = min(
+    1,
+    retentionThreshold + fadeWidth
+  );
+
+  if (
+    elapsedProgress <= fadeStart
+  ) {
+
+    return 1;
+  }
+
+  if (
+    elapsedProgress >= fadeEnd
+  ) {
+
+    fragment.carryPersistenceDepleted = true;
+    fragment.carryPersistenceOpacity = 0;
+    return 0;
+  }
+
+  let fadeProgress = constrain(
+    (elapsedProgress - fadeStart)
+    /
+    (fadeEnd - fadeStart),
+    0,
+    1
+  );
+
+  let smoothFade =
+    fadeProgress
+    *
+    fadeProgress
+    *
+    (3 - 2 * fadeProgress);
+
+  return 1 - smoothFade;
+}
+
+function getCarryVisualSettleProgress(
+  fragment,
+  now = millis()
+) {
+
+  if (
+    fragment.carryDepthSettleStartedAt === null
+    ||
+    !fragment.carryVisualSettleNeeded
+  ) {
+
+    return 1;
+  }
+
+  let progress = constrain(
+    (now - fragment.carryDepthSettleStartedAt)
+    /
+    CARRY_DEPTH_SETTLE_BACK_MS,
+    0,
+    1
+  );
+
+  let smoothProgress =
+    progress
+    *
+    progress
+    *
+    (3 - 2 * progress);
+
+  return smoothProgress;
+}
+
+function getCarryDepthSettleAlpha(
+  fragment,
+  now = millis()
+) {
+
+  let originalAlpha =
+    fragment.carryOriginalVisualAlpha
+    !== null
+      ? fragment.carryOriginalVisualAlpha
+      : fragment.baseAlpha;
+
+  let startAlpha =
+    fragment.carryVisualBaseAlpha
+    !== null
+      ? fragment.carryVisualBaseAlpha
+      : originalAlpha;
+
+  return lerp(
+    startAlpha,
+    originalAlpha,
+    getCarryVisualSettleProgress(
+      fragment,
+      now
+    )
+  );
+}
+
+function getCarrySettledVisualDimension(
+  fragment,
+  dimension,
+  now = millis()
+) {
+
+  let cutValue =
+    dimension === "width"
+      ? fragment.carryCutVisualWidth
+      : fragment.carryCutVisualHeight;
+
+  let originalValue =
+    dimension === "width"
+      ? fragment.carryOriginalVisualWidth
+      : fragment.carryOriginalVisualHeight;
+
+  return lerp(
+    cutValue !== null ? cutValue : fragment[dimension === "width" ? "w" : "h"],
+    originalValue !== null
+      ? originalValue
+      : fragment[dimension === "width" ? "w" : "h"],
+    getCarryVisualSettleProgress(
+      fragment,
+      now
+    )
+  );
+}
+
+function getCarrySettledVisualColor(
+  fragment,
+  now = millis()
+) {
+
+  let cutColor =
+    fragment.carryCutVisualColor
+    ||
+    HUMAN_TEST_COLOR;
+
+  let originalColor =
+    fragment.carryOriginalVisualColor
+    ||
+    cutColor;
+
+  let progress =
+    getCarryVisualSettleProgress(
+      fragment,
+      now
+    );
+
+  return [
+    lerp(cutColor[0], originalColor[0], progress),
+    lerp(cutColor[1], originalColor[1], progress),
+    lerp(cutColor[2], originalColor[2], progress)
+  ];
+}
+
 
 function initializeIncomingCarryMerge() {
 
@@ -6140,6 +6493,8 @@ function initializeIncomingCarryMerge() {
     fragments.filter(
       (fragment) =>
         fragment.carried
+        &&
+        !fragment.carryPersistenceDepleted
         &&
         fragment.incomingCarryMerge === null
     );
@@ -6199,6 +6554,11 @@ function initializeIncomingCarryMerge() {
       fragment,
       clusterAnchor
     );
+
+    fragment.carryPersistenceOpacity =
+      getCarryPersistenceOpacity(
+        fragment
+      );
 
     fragment.stopId = currentStopId;
 
@@ -6860,6 +7220,25 @@ function handleLeaveStop() {
       ? carryCluster[0].carryT
       : 0;
 
+  let carryClusterMaxRadius = 0;
+
+  for (
+    let i = 0;
+    i < carryCluster.length;
+    i++
+  ) {
+
+    carryClusterMaxRadius = max(
+      carryClusterMaxRadius,
+      dist(
+        carryCluster[i].x,
+        carryCluster[i].y,
+        carryClusterCenterX,
+        carryClusterCenterY
+      )
+    );
+  }
+
   for (
     let i = 0;
     i < carryCluster.length;
@@ -6882,6 +7261,21 @@ function handleLeaveStop() {
       chosen.y - carryClusterCenterY;
 
     chosen.carryT = sharedCarryT;
+
+    chosen.carryPersistenceStartedAt = millis();
+    chosen.carryPersistenceOpacity = 1;
+    chosen.carryPersistenceDepleted = false;
+    chosen.carryPersistenceRank =
+      carryClusterMaxRadius > 0
+        ? 1 - dist(
+            chosen.x,
+            chosen.y,
+            carryClusterCenterX,
+            carryClusterCenterY
+          )
+          /
+          carryClusterMaxRadius
+        : 1;
 
 
     // ----------------------------------------------
@@ -6974,7 +7368,48 @@ function handleLeaveStop() {
         replacedContributionIndices.push(
           matchedContributionIndex
         );
+
+        let matchedContribution =
+          handoff.contributions[
+            matchedContributionIndex
+          ];
+
+        chosen.carryVisualBaseAlpha =
+          matchedContribution.alpha;
+        chosen.carryCurrentVisualAlpha =
+          matchedContribution.alpha;
+        chosen.carryCurrentVisualWidth =
+          matchedContribution.width;
+        chosen.carryCurrentVisualHeight =
+          matchedContribution.height;
+        chosen.carryCutVisualWidth =
+          matchedContribution.width;
+        chosen.carryCutVisualHeight =
+          matchedContribution.height;
+        chosen.carryCutVisualColor = [
+          matchedContribution.color[0],
+          matchedContribution.color[1],
+          matchedContribution.color[2]
+        ];
       }
+    }
+
+    if (
+      chosen.carryVisualBaseAlpha === null
+    ) {
+
+      chosen.carryVisualBaseAlpha =
+        chosen.baseAlpha;
+      chosen.carryCurrentVisualAlpha =
+        chosen.baseAlpha;
+      chosen.carryCurrentVisualWidth =
+        chosen.w;
+      chosen.carryCurrentVisualHeight =
+        chosen.h;
+      chosen.carryCutVisualWidth =
+        chosen.w;
+      chosen.carryCutVisualHeight =
+        chosen.h;
     }
 
     let carryIdentity =
@@ -7001,6 +7436,89 @@ function handleLeaveStop() {
       chosen.sourceType = null;
       chosen.originSourceId = null;
       chosen.carrySourceMode = null;
+    }
+
+    if (
+      chosen.sourceType === "human"
+      ||
+      chosen.sourceType === "ai"
+    ) {
+
+      let originalVisual =
+        getShadowVisualState(
+          chosen.sourceType,
+          0
+        );
+
+      chosen.carryOriginalVisualAlpha =
+        originalVisual.alpha;
+      chosen.carryOriginalVisualWidth =
+        chosen.w * originalVisual.sizeMultiplier;
+      chosen.carryOriginalVisualHeight =
+        chosen.h * originalVisual.sizeMultiplier;
+      chosen.carryOriginalVisualColor = [
+        originalVisual.color[0],
+        originalVisual.color[1],
+        originalVisual.color[2]
+      ];
+
+      if (
+        chosen.carryCutVisualColor === null
+      ) {
+
+        chosen.carryCutVisualColor = [
+          originalVisual.color[0],
+          originalVisual.color[1],
+          originalVisual.color[2]
+        ];
+      }
+
+      chosen.carryVisualSettleNeeded =
+        chosen.carryVisualBaseAlpha
+        >
+        chosen.carryOriginalVisualAlpha
+        ||
+        chosen.carryCutVisualWidth
+        >
+        chosen.carryOriginalVisualWidth
+        ||
+        chosen.carryCutVisualHeight
+        >
+        chosen.carryOriginalVisualHeight
+        ||
+        chosen.carryCutVisualColor[0]
+        !==
+        chosen.carryOriginalVisualColor[0]
+        ||
+        chosen.carryCutVisualColor[1]
+        !==
+        chosen.carryOriginalVisualColor[1]
+        ||
+        chosen.carryCutVisualColor[2]
+        !==
+        chosen.carryOriginalVisualColor[2];
+
+      chosen.carryDepthSettleStartAlpha =
+        chosen.carryVisualBaseAlpha;
+      chosen.carryDepthSettleStartedAt =
+        millis();
+
+      if (
+        !chosen.carryVisualSettleNeeded
+      ) {
+
+        chosen.carryCurrentVisualAlpha =
+          chosen.carryOriginalVisualAlpha;
+        chosen.carryCurrentVisualWidth =
+          chosen.carryOriginalVisualWidth;
+        chosen.carryCurrentVisualHeight =
+          chosen.carryOriginalVisualHeight;
+        chosen.carryCurrentVisualColor = [
+          chosen.carryOriginalVisualColor[0],
+          chosen.carryOriginalVisualColor[1],
+          chosen.carryOriginalVisualColor[2]
+        ];
+      }
     }
 
 
@@ -7249,6 +7767,8 @@ function countCarriedFragments() {
 
     if (
       fragments[i].carried
+      &&
+      !fragments[i].carryPersistenceDepleted
     ) {
 
       count++;
