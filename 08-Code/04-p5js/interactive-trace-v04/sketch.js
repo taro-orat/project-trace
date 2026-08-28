@@ -750,6 +750,62 @@ function getOrganicBoundaryRadius(
 }
 
 
+function getDistanceInteractionFalloff(
+  position,
+  sourceType
+) {
+
+  let distanceValue =
+    getParamsForSourceType(sourceType).distance;
+
+  let baseRadius =
+    mapDistanceToRadius(distanceValue);
+
+  let angle =
+    atan2(
+      position.y - mouseY,
+      position.x - mouseX
+    );
+
+  let effectiveRadius =
+    getOrganicBoundaryRadius(
+      baseRadius,
+      angle,
+      currentStopId,
+      sourceType
+    );
+
+  let normalizedDistance =
+    dist(
+      position.x,
+      position.y,
+      mouseX,
+      mouseY
+    )
+    /
+    effectiveRadius;
+
+  if (
+    normalizedDistance >= 1
+  ) {
+
+    return 0;
+  }
+
+  let t =
+    constrain(
+      normalizedDistance,
+      0,
+      1
+    );
+
+  let smoothFalloff =
+    t * t * (3 - 2 * t);
+
+  return 1 - smoothFalloff;
+}
+
+
 function buildCurrentStopSelection() {
 
   let humanDistance =
@@ -992,6 +1048,7 @@ function drawDistanceDebug() {
 function getMovingAmbientJitter(
   position,
   timeValue,
+  sourceType,
   allowStayingWave = false
 ) {
 
@@ -1010,22 +1067,43 @@ function getMovingAmbientJitter(
     return { x: 0, y: 0 };
   }
 
-  let fieldDistance =
-    viewerFieldDistance(
-      position.x,
-      position.y,
-      MOVEMENT_FIELD_SCALE
-    );
+  let falloff;
 
   if (
-    fieldDistance >= 1
+    leavePulse > 0
+    &&
+    !allowStayingWave
+  ) {
+
+    falloff =
+      constrain(
+        1
+        -
+        viewerFieldDistance(
+          position.x,
+          position.y,
+          MOVEMENT_FIELD_SCALE
+        ),
+        0,
+        1
+      );
+  }
+
+  else {
+
+    falloff =
+      getDistanceInteractionFalloff(
+        position,
+        sourceType
+      );
+  }
+
+  if (
+    falloff <= 0
   ) {
 
     return { x: 0, y: 0 };
   }
-
-  let proximity =
-    1 - fieldDistance;
 
   let speedStrength =
     constrain(
@@ -1034,12 +1112,36 @@ function getMovingAmbientJitter(
       1
     );
 
-  let strength =
-    2
-    +
-    proximity * 3
-    +
-    speedStrength * 2;
+  let strength;
+
+  if (
+    leavePulse > 0
+    &&
+    !allowStayingWave
+  ) {
+
+    // Preserve the existing leave-pulse response in this node.
+    strength =
+      2
+      +
+      falloff * 3
+      +
+      speedStrength * 2;
+  }
+
+  else {
+
+    strength =
+      (
+        2
+        +
+        falloff * 3
+        +
+        speedStrength * 2
+      )
+      *
+      falloff;
+  }
 
   if (
     leavePulse > 0
@@ -1997,17 +2099,19 @@ class TraceSource {
       canMoveAmbient
       &&
       (
-        viewerFieldDistance(
-          humanPosition.x,
-          humanPosition.y,
-          MOVEMENT_FIELD_SCALE
-        ) < 1
+        getDistanceInteractionFalloff(
+          humanPosition,
+          "human"
+        )
+        >
+        0
         ||
-        viewerFieldDistance(
-          aiPosition.x,
-          aiPosition.y,
-          MOVEMENT_FIELD_SCALE
-        ) < 1
+        getDistanceInteractionFalloff(
+          aiPosition,
+          "ai"
+        )
+        >
+        0
       )
     ) {
 
@@ -2043,6 +2147,7 @@ class TraceSource {
       ? getMovingAmbientJitter(
           humanPosition,
           this.t,
+          "human",
           viewerState === "STAYING"
         )
       : { x: 0, y: 0 };
@@ -2052,6 +2157,7 @@ class TraceSource {
       ? getMovingAmbientJitter(
           aiPosition,
           this.t,
+          "ai",
           viewerState === "STAYING"
         )
       : { x: 0, y: 0 };
