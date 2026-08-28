@@ -64,12 +64,12 @@ const FRAGMENT_SOURCE_OFFSET = 1.5;
 const SOURCE_COUNT = 432;
 const AMBIENT_GRID_COLUMNS = 24;
 const AMBIENT_GRID_ROWS = 18;
-const AMBIENT_GRID_JITTER = 0.28;
+const AMBIENT_GRID_JITTER = 0.34;
 
 // Node 2B: Distance only selects existing ambient sources.
 // These values are deliberately independent of the renderer and movement code.
-const DISTANCE_MIN_RADIUS = 55;
-const DISTANCE_MAX_RADIUS = 260;
+const DISTANCE_MIN_RADIUS = 30;
+const DISTANCE_MAX_RADIUS = 150;
 const DISTANCE_BOUNDARY_WOBBLE = 0.16;
 const DEBUG_DISTANCE_BOUNDARY = false;
 const DEBUG_SELECTED_MARKER = false;
@@ -87,6 +87,7 @@ const DEBUG_LEAVING_HANDOFF = false;
 const LEAVING_HANDOFF_MICRO_MOTION_PX = 0.35;
 const AMBIENT_RECOVERY_DURATION_MS = 15000;
 const AMBIENT_RECOVERY_DELAY_MAX_MS = 2000;
+const AMBIENT_APPEARANCE_TRANSITION_MS = 350;
 const DEBUG_AMBIENT_RECOVERY = false;
 const SHADOW_DEEPEN_DURATION_MS = 90000;
 const HUMAN_SHADOW_DEEP_COLOR = [125, 0, 25];
@@ -101,6 +102,18 @@ const ACCUMULATION_LAYER_LATERAL_VARIATION_PX = 0.35;
 const ACCUMULATION_LAYER_ROTATION = 0.04;
 const THICKNESS_DIRECTION_X = 0.78;
 const THICKNESS_DIRECTION_Y = 0.62;
+
+// v05 visual layer only: stable size identity and material skin.
+const MATERIAL_VISUAL_SCALE = 1.6;
+const MATERIAL_SIZE_TIER_MULTIPLIERS = [
+  0.42,
+  0.72,
+  1.10,
+  1.75,
+  2.75
+];
+const HUMAN_MATERIAL_DETAIL_ALPHA = 0.18;
+const AI_MATERIAL_DETAIL_ALPHA = 0.34;
 
 let nextHumanSourceNumber = 1;
 let nextAISourceNumber = 1;
@@ -182,24 +195,6 @@ function getStableAmbientPosition(
   canvasHeight
 ) {
 
-  let hash = 17;
-
-  for (
-    let i = 0;
-    i < sourceId.length;
-    i++
-  ) {
-
-    hash =
-      (
-        hash * 31
-        +
-        sourceId.charCodeAt(i)
-      )
-      %
-      100000;
-  }
-
   let sourceNumber =
     max(
       1,
@@ -223,28 +218,16 @@ function getStableAmbientPosition(
     AMBIENT_GRID_ROWS;
 
   let jitterX =
-    (
-      (hash % 1000) / 1000
-      -
-      0.5
-    )
-    *
-    AMBIENT_GRID_JITTER;
+    getStableAmbientAxisJitter(
+      sourceId,
+      "x"
+    );
 
   let jitterY =
-    (
-      (
-        floor(hash / 1000)
-        %
-        1000
-      )
-      /
-      1000
-      -
-      0.5
-    )
-    *
-    AMBIENT_GRID_JITTER;
+    getStableAmbientAxisJitter(
+      sourceId,
+      "y"
+    );
 
   return {
     x:
@@ -273,6 +256,49 @@ function getStableAmbientPosition(
       /
       AMBIENT_GRID_ROWS
   };
+}
+
+
+function getStableAmbientAxisJitter(
+  sourceId,
+  axis
+) {
+
+  let hash =
+    axis === "x"
+      ? 17
+      : 53;
+
+  let key =
+    sourceId
+    +
+    ":ambient:"
+    +
+    axis;
+
+  for (
+    let i = 0;
+    i < key.length;
+    i++
+  ) {
+
+    hash =
+      (
+        hash * 31
+        +
+        key.charCodeAt(i)
+      )
+      %
+      100000;
+  }
+
+  return (
+    (hash % 1000) / 1000
+    -
+    0.5
+  )
+  *
+  AMBIENT_GRID_JITTER;
 }
 
 
@@ -565,6 +591,12 @@ function drawAccumulationLayers(
 
     rotate(descriptor.rotation);
 
+    let materialScale =
+      MATERIAL_VISUAL_SCALE
+      * getStableContributionSizeMultiplier(
+          getSourceMaterialSeed(source, sourceType)
+        );
+
     fill(
       visual.color[0],
       visual.color[1],
@@ -581,8 +613,14 @@ function drawAccumulationLayers(
     rect(
       0,
       0,
-      source.w * visual.sizeMultiplier * descriptor.scale,
-      source.h * visual.sizeMultiplier * descriptor.scale
+      source.w
+      * visual.sizeMultiplier
+      * materialScale
+      * descriptor.scale,
+      source.h
+      * visual.sizeMultiplier
+      * materialScale
+      * descriptor.scale
     );
 
     pop();
@@ -664,6 +702,16 @@ function drawCapturedAccumulationLayers(
 
     rotate(layer.rotation);
 
+    let materialScale =
+      MATERIAL_VISUAL_SCALE
+      * getStableContributionSizeMultiplier(
+          contribution.originSourceId
+          ||
+          contribution.sourceId
+          ||
+          "legacy-captured"
+        );
+
     fill(
       contribution.color[0],
       contribution.color[1],
@@ -682,8 +730,12 @@ function drawCapturedAccumulationLayers(
     rect(
       0,
       0,
-      contribution.width * layer.scale,
-      contribution.height * layer.scale
+      contribution.width
+      * materialScale
+      * layer.scale,
+      contribution.height
+      * materialScale
+      * layer.scale
     );
 
     pop();
@@ -771,6 +823,25 @@ function getCurrentAmbientDisplayPosition(
       +
       ambientOffset.y
   };
+}
+
+
+function getLastVisibleAmbientPosition(
+  source,
+  sourceType
+) {
+
+  let lastPosition =
+    sourceType === "human"
+      ? source.humanLastVisiblePosition
+      : source.aiLastVisiblePosition;
+
+  return lastPosition === null
+    ? getCurrentAmbientDisplayPosition(source, sourceType)
+    : {
+        x: lastPosition.x,
+        y: lastPosition.y
+      };
 }
 
 
@@ -964,6 +1035,45 @@ function getAmbientGhostState(
 }
 
 
+function getAmbientAppearanceTransitionProgress(
+  source,
+  sourceType
+) {
+
+  let ghostState =
+    getAmbientGhostState(
+      source,
+      sourceType
+    );
+
+  if (
+    ghostState === null
+  ) {
+
+    return 1;
+  }
+
+  if (
+    ghostState.appearanceTransitionStartTime === null
+  ) {
+
+    return 0;
+  }
+
+  return constrain(
+    (
+      millis()
+      -
+      ghostState.appearanceTransitionStartTime
+    )
+    /
+    AMBIENT_APPEARANCE_TRANSITION_MS,
+    0,
+    1
+  );
+}
+
+
 function setAmbientGhostState(
   source,
   sourceType,
@@ -995,7 +1105,11 @@ function isAmbientSourceSelectable(
       sourceType
     );
 
-  return ghostState === null;
+  return (
+    ghostState === null
+    ||
+    ghostState.recoveryProgress >= 1
+  );
 }
 
 
@@ -1055,6 +1169,7 @@ function createAmbientGhostState(
       currentStopId
     ),
     recoveryProgress: 0,
+    appearanceTransitionStartTime: null,
     motionPhase: gatheringState.ghostPhase,
     directionAngle: atan2(
       gatheringState.target.y - gatheringState.startPosition.y,
@@ -1259,14 +1374,10 @@ function drawRecoveringAmbientGhost(
       recoveryProgress
     );
 
-  let width =
-    source.w * revealProgress;
-
-  let angle =
-    lerp(
-      ghostState.directionAngle,
-      0,
-      recoveryProgress
+  let appearanceProgress =
+    getAmbientAppearanceTransitionProgress(
+      source,
+      sourceType
     );
 
   push();
@@ -1276,26 +1387,21 @@ function drawRecoveringAmbientGhost(
     renderY + microOffset.y
   );
 
-  rotate(angle);
-
-  fill(
+  drawContributionMaterial(
+    sourceType,
     sourceType === "human"
-      ? HUMAN_TEST_COLOR[0]
-      : AI_TEST_COLOR[0],
-    sourceType === "human"
-      ? HUMAN_TEST_COLOR[1]
-      : AI_TEST_COLOR[1],
-    sourceType === "human"
-      ? HUMAN_TEST_COLOR[2]
-      : AI_TEST_COLOR[2],
-    alpha
-  );
-
-  rect(
-    -source.w / 2 + width / 2,
+      ? HUMAN_TEST_COLOR
+      : AI_TEST_COLOR,
     0,
-    width,
-    source.h
+    0,
+    source.w,
+    source.h,
+    alpha
+    *
+    revealProgress
+    *
+    (1 - appearanceProgress),
+    getSourceMaterialSeed(source, sourceType)
   );
 
   pop();
@@ -1318,7 +1424,23 @@ function finalizeAmbientGhostRecovery() {
       source.humanGhostState.recoveryProgress >= 1
     ) {
 
-      source.humanGhostState = null;
+      if (
+        source.humanGhostState.appearanceTransitionStartTime === null
+      ) {
+
+        source.humanGhostState.appearanceTransitionStartTime = millis();
+      }
+
+      if (
+        millis()
+        -
+        source.humanGhostState.appearanceTransitionStartTime
+        >=
+        AMBIENT_APPEARANCE_TRANSITION_MS
+      ) {
+
+        source.humanGhostState = null;
+      }
     }
 
     if (
@@ -1327,7 +1449,23 @@ function finalizeAmbientGhostRecovery() {
       source.aiGhostState.recoveryProgress >= 1
     ) {
 
-      source.aiGhostState = null;
+      if (
+        source.aiGhostState.appearanceTransitionStartTime === null
+      ) {
+
+        source.aiGhostState.appearanceTransitionStartTime = millis();
+      }
+
+      if (
+        millis()
+        -
+        source.aiGhostState.appearanceTransitionStartTime
+        >=
+        AMBIENT_APPEARANCE_TRANSITION_MS
+      ) {
+
+        source.aiGhostState = null;
+      }
     }
   }
 }
@@ -1614,8 +1752,24 @@ function drawLeavingVisualStates() {
       rect(
         0,
         0,
-        contribution.width,
+        contribution.width
+        * MATERIAL_VISUAL_SCALE
+        * getStableContributionSizeMultiplier(
+            contribution.originSourceId
+            ||
+            contribution.sourceId
+            ||
+            "legacy-captured"
+          ),
         contribution.height
+        * MATERIAL_VISUAL_SCALE
+        * getStableContributionSizeMultiplier(
+            contribution.originSourceId
+            ||
+            contribution.sourceId
+            ||
+            "legacy-captured"
+          )
       );
 
       pop();
@@ -1712,12 +1866,6 @@ function drawAmbientGhost(
     return;
   }
 
-  let width =
-    source.w * revealProgress;
-
-  let angle =
-    atan2(dy, dx);
-
   let ghostPhase =
     state.ghostPhase;
 
@@ -1755,27 +1903,19 @@ function drawAmbientGhost(
     state.startPosition.y + microY
   );
 
-  rotate(angle);
-
-  fill(
+  drawContributionMaterial(
+    sourceType,
     sourceType === "human"
-      ? HUMAN_TEST_COLOR[0]
-      : AI_TEST_COLOR[0],
-    sourceType === "human"
-      ? HUMAN_TEST_COLOR[1]
-      : AI_TEST_COLOR[1],
-    sourceType === "human"
-      ? HUMAN_TEST_COLOR[2]
-      : AI_TEST_COLOR[2],
-    ghostAlpha
-  );
-
-  // Directional trailing strip: only the vacated part is drawn.
-  rect(
-    -source.w / 2 + width / 2,
+      ? HUMAN_TEST_COLOR
+      : AI_TEST_COLOR,
     0,
-    width,
-    source.h
+    0,
+    source.w,
+    source.h,
+    ghostAlpha
+    *
+    revealProgress,
+    getSourceMaterialSeed(source, sourceType)
   );
 
   pop();
@@ -1845,7 +1985,7 @@ function initializeGatheringState(
       : source.aiSource;
 
   let startPosition =
-    getCurrentAmbientDisplayPosition(
+    getLastVisibleAmbientPosition(
       source,
       sourceType
     );
@@ -1902,13 +2042,13 @@ function initializeGatheringForStop(
     let source = sources[i];
 
     let currentHumanPosition =
-      getCurrentAmbientDisplayPosition(
+      getLastVisibleAmbientPosition(
         source,
         "human"
       );
 
     let currentAIPosition =
-      getCurrentAmbientDisplayPosition(
+      getLastVisibleAmbientPosition(
         source,
         "ai"
       );
@@ -2615,27 +2755,280 @@ function validateSourceIdentities() {
 
 // Purple / mixed appearance is produced by overlapping these independent
 // AI-blue and Human-red passes, never by a fixed third source color.
+function getMaterialSeed(
+  sourceGeometry,
+  sourceType,
+  x,
+  y,
+  w,
+  h
+) {
+
+  if (
+    sourceGeometry !== null
+  ) {
+
+    if (
+      sourceType === "human"
+      &&
+      sourceGeometry.humanSource
+      &&
+      sourceGeometry.humanSource.sourceId
+    ) {
+
+      return sourceGeometry.humanSource.sourceId;
+    }
+
+    if (
+      sourceType === "ai"
+      &&
+      sourceGeometry.aiSource
+      &&
+      sourceGeometry.aiSource.sourceId
+    ) {
+
+      return sourceGeometry.aiSource.sourceId;
+    }
+
+    if (
+      sourceGeometry.originSourceId
+    ) {
+
+      return sourceGeometry.originSourceId;
+    }
+
+    if (
+      sourceGeometry.sourceId
+    ) {
+
+      return sourceGeometry.sourceId;
+    }
+  }
+
+  return sourceType
+    + ":material:"
+    + round(x)
+    + ":"
+    + round(y)
+    + ":"
+    + round(w)
+    + ":"
+    + round(h);
+}
+
+
+function getStableContributionSizeTier(
+  materialSeed
+) {
+
+  let value =
+    getStableUnit(materialSeed + ":size-tier");
+
+  if (value < 0.12) {
+    return 0;
+  }
+
+  if (value < 0.64) {
+    return 1;
+  }
+
+  if (value < 0.88) {
+    return 2;
+  }
+
+  if (value < 0.98) {
+    return 3;
+  }
+
+  return 4;
+}
+
+
+function getStableContributionSizeMultiplier(
+  materialSeed
+) {
+
+  return MATERIAL_SIZE_TIER_MULTIPLIERS[
+    getStableContributionSizeTier(materialSeed)
+  ];
+}
+
+
+function getSourceMaterialSeed(
+  source,
+  sourceType
+) {
+
+  if (
+    sourceType === "human"
+    &&
+    source.humanSource
+    &&
+    source.humanSource.sourceId
+  ) {
+
+    return source.humanSource.sourceId;
+  }
+
+  if (
+    sourceType === "ai"
+    &&
+    source.aiSource
+    &&
+    source.aiSource.sourceId
+  ) {
+
+    return source.aiSource.sourceId;
+  }
+
+  return source.originSourceId
+    || source.sourceId
+    || sourceType + ":legacy-material";
+}
+
+
+function getMaterialVisualScaleForSource(
+  source,
+  sourceType
+) {
+
+  return MATERIAL_VISUAL_SCALE
+    * getStableContributionSizeMultiplier(
+        getSourceMaterialSeed(source, sourceType)
+      );
+}
+
+
+function getMaterialColor(
+  color,
+  amount,
+  sourceType
+) {
+
+  let fadedTarget =
+    sourceType === "human"
+      ? [255, 145, 165]
+      : [125, 190, 255];
+
+  return [
+    lerp(color[0], fadedTarget[0], amount),
+    lerp(color[1], fadedTarget[1], amount),
+    lerp(color[2], fadedTarget[2], amount)
+  ];
+}
+
+
+function drawContributionMaterial(
+  sourceType,
+  color,
+  x,
+  y,
+  w,
+  h,
+  alpha,
+  materialSeed
+) {
+
+  let scale =
+    MATERIAL_VISUAL_SCALE
+    * getStableContributionSizeMultiplier(materialSeed);
+
+  let materialW = w * scale;
+  let materialH = h * scale;
+  let left = x - materialW * 0.5;
+  let top = y - materialH * 0.5;
+
+  fill(color[0], color[1], color[2], alpha);
+
+  if (sourceType === "human") {
+
+    let edge = getStableUnit(materialSeed + ":edge");
+    let topVariation = getStableUnit(materialSeed + ":top");
+
+    beginShape();
+    vertex(left, top + materialH * (0.08 + edge * 0.08));
+    vertex(left + materialW * (0.72 + topVariation * 0.10), top);
+    vertex(left + materialW, top + materialH * (0.12 + topVariation * 0.08));
+    vertex(left + materialW * (0.92 - edge * 0.10), top + materialH);
+    vertex(left + materialW * (0.18 + topVariation * 0.08), top + materialH * (0.90 - edge * 0.08));
+    endShape(CLOSE);
+
+    let surface = getStableUnit(materialSeed + ":surface");
+    let washed = getMaterialColor(color, 0.52, sourceType);
+
+    fill(washed[0], washed[1], washed[2], alpha * 0.34);
+    beginShape();
+    vertex(left + materialW * (0.12 + surface * 0.08), top + materialH * 0.14);
+    vertex(left + materialW * 0.78, top + materialH * 0.08);
+    vertex(left + materialW * 0.88, top + materialH * 0.54);
+    vertex(left + materialW * 0.34, top + materialH * 0.66);
+    endShape(CLOSE);
+
+    let film = getMaterialColor(color, 0.08, sourceType);
+    fill(film[0], film[1], film[2], alpha * 0.28);
+    rect(round(left + materialW * 0.05 + materialW * 0.09 * 0.5), round(top + materialH * 0.08 + materialH * 0.84 * 0.5), round(max(1, materialW * 0.09)), round(max(1, materialH * 0.84)));
+
+    let exposure = getStableUnit(materialSeed + ":exposure");
+    let faded = getMaterialColor(color, 0.26, sourceType);
+    fill(faded[0], faded[1], faded[2], alpha * HUMAN_MATERIAL_DETAIL_ALPHA);
+    let exposureW = max(1, materialW * (0.34 + exposure * 0.18));
+    let exposureH = max(1, materialH * 0.28);
+    rect(round(left + materialW * (0.10 + exposure * 0.12) + exposureW * 0.5), round(top + materialH * 0.12 + exposureH * 0.5), round(exposureW), round(exposureH));
+
+    let shadow = getMaterialColor(color, 0.18, sourceType);
+    fill(shadow[0], shadow[1], shadow[2], alpha * 0.12);
+    let shadowW = max(1, materialW * 0.76);
+    let shadowH = max(1, materialH * 0.10);
+    rect(round(left + materialW * 0.08 + shadowW * 0.5), round(top + materialH * 0.72 + shadowH * 0.5), round(shadowW), round(shadowH));
+
+    return;
+  }
+
+  rect(x, y, round(materialW), round(materialH));
+
+  let subdivision = getStableUnit(materialSeed + ":subdivision");
+  let scan = getMaterialColor(color, 0.44, sourceType);
+  fill(scan[0], scan[1], scan[2], alpha * AI_MATERIAL_DETAIL_ALPHA);
+
+  let scanOneW = max(1, materialW * 0.18);
+  let scanOneH = max(1, materialH * 0.80);
+  rect(round(left + materialW * (0.16 + subdivision * 0.10) + scanOneW * 0.5), round(top + materialH * 0.10 + scanOneH * 0.5), round(scanOneW), round(scanOneH));
+  let scanTwoW = max(1, materialW * 0.24);
+  let scanTwoH = max(1, materialH * 0.28);
+  rect(round(left + materialW * (0.54 + subdivision * 0.10) + scanTwoW * 0.5), round(top + materialH * 0.12 + scanTwoH * 0.5), round(scanTwoW), round(scanTwoH));
+  let scanThreeW = max(1, materialW * 0.26);
+  let scanThreeH = max(1, materialH * 0.24);
+  rect(round(left + materialW * (0.54 - subdivision * 0.08) + scanThreeW * 0.5), round(top + materialH * 0.56 + scanThreeH * 0.5), round(scanThreeW), round(scanThreeH));
+
+  fill(color[0], color[1], color[2], alpha * 0.26);
+  let scanBarOneW = max(1, materialW * 0.84);
+  let scanBarOneH = max(1, materialH * 0.09);
+  rect(round(left + materialW * 0.08 + scanBarOneW * 0.5), round(top + materialH * 0.36 + scanBarOneH * 0.5), round(scanBarOneW), round(scanBarOneH));
+  let scanBarTwoW = max(1, materialW * 0.84);
+  let scanBarTwoH = max(1, materialH * 0.07);
+  rect(round(left + materialW * 0.08 + scanBarTwoW * 0.5), round(top + materialH * 0.70 + scanBarTwoH * 0.5), round(scanBarTwoW), round(scanBarTwoH));
+}
+
+
 function drawSourcePass(
   color,
   x,
   y,
   w,
   h,
-  alpha
+  alpha,
+  sourceType,
+  materialSeed
 ) {
-
-  fill(
-    color[0],
-    color[1],
-    color[2],
-    alpha
-  );
-
-  rect(
-    round(x),
-    round(y),
-    round(w),
-    round(h)
+  drawContributionMaterial(
+    sourceType,
+    color,
+    x,
+    y,
+    w,
+    h,
+    alpha,
+    materialSeed
   );
 }
 
@@ -2692,7 +3085,9 @@ function drawSourcePasses(
       aiY,
       w,
       h,
-      alpha
+      alpha,
+      "ai",
+      getMaterialSeed(sourceGeometry, "ai", aiX, aiY, w, h)
     );
   }
 
@@ -2715,7 +3110,9 @@ function drawSourcePasses(
       humanY,
       w,
       h,
-      alpha
+      alpha,
+      "human",
+      getMaterialSeed(sourceGeometry, "human", humanX, humanY, w, h)
     );
   }
 }
@@ -2836,6 +3233,8 @@ const FRAGMENT_DECAY_TIME = 1800;
 
 let sources =
   new Array(SOURCE_COUNT);
+
+let v05Canvas = null;
 
 let ambientPerformanceLogged = false;
 
@@ -2979,16 +3378,28 @@ async function setup() {
   // ----------------------------------------------
 
   document.title =
-    "interactive-trace-v04 | parameter-mode | mixed-stay";
+    "interactive-trace-v05 | parameter-mode | mixed-stay";
 
   console.log(
-    "RUNNING: interactive-trace-v03 | parameter-mode | mixed-stay"
+    "RUNNING: interactive-trace-v05 | parameter-mode | mixed-stay"
   );
 
 
-  createCanvas(
+  v05Canvas = createCanvas(
     800,
     600
+  );
+
+  v05Canvas.elt.style.setProperty(
+    "width",
+    "100vw",
+    "important"
+  );
+
+  v05Canvas.elt.style.setProperty(
+    "height",
+    "100vh",
+    "important"
   );
 
 
@@ -3459,6 +3870,8 @@ class TraceSource {
     this.aiGatheringState = null;
     this.humanStayFrozenPosition = null;
     this.aiStayFrozenPosition = null;
+    this.humanLastVisiblePosition = null;
+    this.aiLastVisiblePosition = null;
     this.humanGhostState = null;
     this.aiGhostState = null;
   }
@@ -3687,6 +4100,22 @@ class TraceSource {
         "ai"
       );
 
+    if (
+      viewerState === "MOVING"
+    ) {
+
+      this.aiLastVisiblePosition = {
+        x:
+          aiPosition.x
+          +
+          aiOffsetX,
+        y:
+          aiPosition.y
+          +
+          aiOffsetY
+      };
+    }
+
     let aiShadowVisual =
       getShadowVisualState(
         "ai",
@@ -3702,8 +4131,18 @@ class TraceSource {
         "ai"
       )
       &&
-      getAmbientGhostState(this, "ai") === null
+      (
+        getAmbientGhostState(this, "ai") === null
+        ||
+        getAmbientGhostState(this, "ai").recoveryProgress >= 1
+      )
     ) {
+
+      let aiAmbientAppearanceProgress =
+        getAmbientAppearanceTransitionProgress(
+          this,
+          "ai"
+        );
 
       drawAccumulationLayers(
         this,
@@ -3737,17 +4176,9 @@ class TraceSource {
         )
       );
 
-      fill(
-        aiShadowVisual.color[0],
-        aiShadowVisual.color[1],
-        aiShadowVisual.color[2],
-        aiShadowVisual.alpha
-      );
-
-
-      rect(
-
-      round(
+      drawContributionMaterial(
+        "ai",
+        aiShadowVisual.color,
         aiPosition.x
         +
         (
@@ -3756,10 +4187,7 @@ class TraceSource {
           aiPosition.isFrozen
             ? 0
             : aiOffsetX
-        )
-      ),
-
-      round(
+        ),
         aiPosition.y
         +
         (
@@ -3768,16 +4196,13 @@ class TraceSource {
           aiPosition.isFrozen
             ? 0
             : aiOffsetY
-        )
-      ),
-
-      round(
-        this.w * aiShadowVisual.sizeMultiplier
-      ),
-
-        round(
-          this.h * aiShadowVisual.sizeMultiplier
-        )
+        ),
+        this.w * aiShadowVisual.sizeMultiplier,
+        this.h * aiShadowVisual.sizeMultiplier,
+        aiShadowVisual.alpha
+        *
+        aiAmbientAppearanceProgress,
+        this.aiSource.sourceId
       );
 
     }
@@ -3856,6 +4281,22 @@ class TraceSource {
         "human"
       );
 
+    if (
+      viewerState === "MOVING"
+    ) {
+
+      this.humanLastVisiblePosition = {
+        x:
+          humanPosition.x
+          +
+          humanOffsetX,
+        y:
+          humanPosition.y
+          +
+          humanOffsetY
+      };
+    }
+
     let humanShadowVisual =
       getShadowVisualState(
         "human",
@@ -3871,8 +4312,18 @@ class TraceSource {
         "human"
       )
       &&
-      getAmbientGhostState(this, "human") === null
+      (
+        getAmbientGhostState(this, "human") === null
+        ||
+        getAmbientGhostState(this, "human").recoveryProgress >= 1
+      )
     ) {
+
+      let humanAmbientAppearanceProgress =
+        getAmbientAppearanceTransitionProgress(
+          this,
+          "human"
+        );
 
       // Accumulation layers are rendered behind the front fragment.
       drawAccumulationLayers(
@@ -3907,17 +4358,9 @@ class TraceSource {
         )
       );
 
-      fill(
-        humanShadowVisual.color[0],
-        humanShadowVisual.color[1],
-        humanShadowVisual.color[2],
-        humanShadowVisual.alpha
-      );
-
-
-      rect(
-
-      round(
+      drawContributionMaterial(
+        "human",
+        humanShadowVisual.color,
         humanPosition.x
         +
         (
@@ -3926,10 +4369,7 @@ class TraceSource {
           humanPosition.isFrozen
             ? 0
             : humanOffsetX
-        )
-      ),
-
-      round(
+        ),
         humanPosition.y
         +
         (
@@ -3938,16 +4378,13 @@ class TraceSource {
           humanPosition.isFrozen
             ? 0
             : humanOffsetY
-        )
-      ),
-
-      round(
-        this.w * humanShadowVisual.sizeMultiplier
-      ),
-
-        round(
-          this.h * humanShadowVisual.sizeMultiplier
-        )
+        ),
+        this.w * humanShadowVisual.sizeMultiplier,
+        this.h * humanShadowVisual.sizeMultiplier,
+        humanShadowVisual.alpha
+        *
+        humanAmbientAppearanceProgress,
+        this.humanSource.sourceId
       );
 
     }
