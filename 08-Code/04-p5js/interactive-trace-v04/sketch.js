@@ -1416,6 +1416,66 @@ function captureLeavingVisualState() {
     }
   }
 
+  for (
+    let i = 0;
+    i < fragments.length;
+    i++
+  ) {
+
+    let fragment = fragments[i];
+
+    if (
+      !fragment.shadowMember
+      ||
+      fragment.stopId !== currentStopId
+      ||
+      (
+        fragment.sourceType !== "human"
+        &&
+        fragment.sourceType !== "ai"
+      )
+    ) {
+
+      continue;
+    }
+
+    let capturedDepth =
+      getEffectiveShadowDepth();
+
+    let capturedVisual =
+      getShadowVisualState(
+        fragment.sourceType,
+        capturedDepth
+      );
+
+    contributions.push({
+      sourceId: fragment.originSourceId,
+      sourceType: fragment.sourceType,
+      originSourceId: fragment.originSourceId,
+      fragmentRef: fragment,
+      x: fragment.x,
+      y: fragment.y,
+      width: fragment.w * capturedVisual.sizeMultiplier,
+      height: fragment.h * capturedVisual.sizeMultiplier,
+      rotation: 0,
+      alpha: capturedVisual.alpha,
+      visualWeight: capturedVisual.visualWeight,
+      color: [
+        capturedVisual.color[0],
+        capturedVisual.color[1],
+        capturedVisual.color[2]
+      ],
+      motionPhase: fragment.carryT,
+      motionOffset: { x: 0, y: 0 },
+      accumulationLayers:
+        getVisibleAccumulationLayerStates(
+          fragment,
+          fragment.sourceType,
+          capturedDepth
+        )
+    });
+  }
+
   leavingVisualStates.push({
     stopId: currentStopId,
     capturedAt: millis(),
@@ -1489,6 +1549,13 @@ function drawLeavingVisualStates() {
     ) {
 
       let contribution = state.contributions[i];
+
+      if (
+        contribution.replacedByCarry
+      ) {
+
+        continue;
+      }
 
       let motionOffsetX =
         (
@@ -2688,6 +2755,7 @@ const CARRY_MAX_PER_STOP = 12;
 
 const CARRY_EXTRA_COUNT = 10;
 const CARRY_SOURCE_MATCH_MAX_DISTANCE = 28;
+const INCOMING_CARRY_MERGE_DURATION_MS = 1800;
 
 
 // ==================================================
@@ -5118,6 +5186,8 @@ class TraceFragment {
     this.settled = false;
 
     this.carried = false;
+    this.shadowMember = false;
+    this.incomingCarryMerge = null;
 
     // This mode is assigned only when the fragment becomes carried.
     // Before then, all fragment states use both independent source passes.
@@ -5339,6 +5409,75 @@ class TraceFragment {
       &&
 
       this.stopId === currentStopId;
+
+
+    // Incoming carry is merged only after a new STAYING begins.
+    // Its provenance remains unchanged while only the behaviour state changes.
+    if (
+      this.incomingCarryMerge !== null
+      &&
+      (
+        viewerState !== "STAYING"
+        ||
+        this.incomingCarryMerge.stopId !== currentStopId
+      )
+    ) {
+
+      this.incomingCarryMerge = null;
+    }
+
+    if (
+      this.incomingCarryMerge !== null
+    ) {
+
+      let mergeState =
+        this.incomingCarryMerge;
+
+      let mergeProgress =
+        constrain(
+          (
+            millis()
+            -
+            mergeState.startTime
+          )
+          /
+          INCOMING_CARRY_MERGE_DURATION_MS,
+          0,
+          1
+        );
+
+      let smoothMergeProgress =
+        mergeProgress
+        *
+        mergeProgress
+        *
+        (3 - 2 * mergeProgress);
+
+      this.x =
+        lerp(
+          mergeState.startX,
+          mergeState.targetX,
+          smoothMergeProgress
+        );
+
+      this.y =
+        lerp(
+          mergeState.startY,
+          mergeState.targetY,
+          smoothMergeProgress
+        );
+
+      if (
+        mergeProgress >= 1
+      ) {
+
+        this.incomingCarryMerge = null;
+        this.carried = false;
+        this.shadowMember = true;
+      }
+
+      return;
+    }
 
 
     // =================================================
@@ -5614,7 +5753,65 @@ class TraceFragment {
   // DISPLAY
   // ==================================================
 
+  displayShadowMember() {
+
+    if (
+      this.sourceType !== "human"
+      &&
+      this.sourceType !== "ai"
+    ) {
+
+      return;
+    }
+
+    let shadowDepth =
+      getEffectiveShadowDepth();
+
+    let visual =
+      getShadowVisualState(
+        this.sourceType,
+        shadowDepth
+      );
+
+    let sourceMode =
+      this.sourceType === "human"
+        ? CARRY_SOURCE_MODE_HUMAN
+        : CARRY_SOURCE_MODE_AI;
+
+    drawAccumulationLayers(
+      this,
+      this.sourceType,
+      { x: this.x, y: this.y },
+      visual,
+      shadowDepth
+    );
+
+    drawSourcePasses(
+      sourceMode,
+      this.x,
+      this.y,
+      this.w * visual.sizeMultiplier,
+      this.h * visual.sizeMultiplier,
+      visual.alpha,
+      this
+    );
+  }
+
   display() {
+
+    if (
+      this.shadowMember
+      &&
+      !this.settled
+      &&
+      this.stopId === currentStopId
+      &&
+      viewerState === "STAYING"
+    ) {
+
+      this.displayShadowMember();
+      return;
+    }
 
     // Node 2C hides only current-stop synthetic deposits while STAYING.
     // Their data still exists for the unchanged leave/carry/residual lifecycle.
@@ -5869,6 +6066,101 @@ class TraceFragment {
 // BEGIN NEW STOP
 // ==================================================
 
+function getIncomingCarryMergeTarget(
+  fragment
+) {
+
+  let identityKey =
+    fragment.originSourceId
+    ||
+    "unresolved-carry";
+
+  let targetOffsetX =
+    map(
+      getStableUnit(
+        identityKey + ":merge:" + currentStopId + ":x"
+      ),
+      0,
+      1,
+      -GATHER_TARGET_RX * 0.45,
+      GATHER_TARGET_RX * 0.45
+    );
+
+  let targetOffsetY =
+    map(
+      getStableUnit(
+        identityKey + ":merge:" + currentStopId + ":y"
+      ),
+      0,
+      1,
+      -GATHER_TARGET_RY * 0.45,
+      GATHER_TARGET_RY * 0.45
+    );
+
+  return {
+    x: stopX + targetOffsetX,
+    y: stopY + targetOffsetY
+  };
+}
+
+
+function initializeIncomingCarryMerge() {
+
+  for (
+    let i = 0;
+    i < fragments.length;
+    i++
+  ) {
+
+    let fragment = fragments[i];
+
+    if (
+      !fragment.carried
+      ||
+      fragment.incomingCarryMerge !== null
+    ) {
+
+      continue;
+    }
+
+    let target = getIncomingCarryMergeTarget(fragment);
+
+    fragment.stopId = currentStopId;
+
+    fragment.incomingCarryMerge = {
+      stopId: currentStopId,
+      startX: fragment.x,
+      startY: fragment.y,
+      targetX: target.x,
+      targetY: target.y,
+      startTime: millis()
+    };
+
+    fragment.humanAccumulationLayers = [];
+    fragment.aiAccumulationLayers = [];
+
+    if (
+      fragment.sourceType === "human"
+    ) {
+
+      fragment.humanAccumulationLayers =
+        createAccumulationLayerDescriptors(
+          fragment.originSourceId
+        );
+    }
+
+    if (
+      fragment.sourceType === "ai"
+    ) {
+
+      fragment.aiAccumulationLayers =
+        createAccumulationLayerDescriptors(
+          fragment.originSourceId
+        );
+    }
+  }
+}
+
 function beginNewStop() {
 
   currentStopId++;
@@ -5900,6 +6192,8 @@ function beginNewStop() {
   initializeGatheringForStop(
     currentStopGatheringStartTime
   );
+
+  initializeIncomingCarryMerge();
 
 
   currentImprint =
@@ -6297,6 +6591,31 @@ function handleLeaveStop() {
     // ----------------------------------------------
 
     chosen.carried = true;
+    chosen.shadowMember = false;
+
+    let handoff =
+      leavingVisualStates[leavingVisualStates.length - 1];
+
+    if (
+      handoff !== undefined
+    ) {
+
+      for (
+        let contributionIndex = 0;
+        contributionIndex < handoff.contributions.length;
+        contributionIndex++
+      ) {
+
+        if (
+          handoff.contributions[contributionIndex].fragmentRef
+          ===
+          chosen
+        ) {
+
+          handoff.contributions[contributionIndex].replacedByCarry = true;
+        }
+      }
+    }
 
     let carryIdentity =
       resolveCarrySourceIdentity(chosen);
@@ -6336,11 +6655,13 @@ function handleLeaveStop() {
   // MOST REMAIN
   // =================================================
 
-  for (
-    let i = 0;
-    i < candidates.length;
-    i++
-  ) {
+    for (
+      let i = 0;
+      i < candidates.length;
+      i++
+    ) {
+
+    candidates[i].shadowMember = false;
 
     candidates[i].settle(
       currentStopFrames
