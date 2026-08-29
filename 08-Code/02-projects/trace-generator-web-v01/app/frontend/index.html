@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Trace Generator Web</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main>
+    <h1>Trace Generator</h1>
+    <label for="mode">生成模式</label>
+    <select id="mode"><option>Narrative Mode</option><option>Parameter Mode</option></select>
+    <label for="memory">记忆</label>
+    <textarea id="memory" rows="8" placeholder="请输入一段记忆"></textarea>
+    <label for="creative-lock">Creative Lock｜必须保留</label>
+    <textarea id="creative-lock" rows="4"></textarea>
+    <p class="hint">提示：每行一个</p>
+    <label for="must-avoid">Must Avoid｜禁止出现</label>
+    <textarea id="must-avoid" rows="4"></textarea>
+    <p class="hint">提示：每行一个</p>
+    <button id="generate" type="button">生成</button>
+    <h2>结果</h2>
+    <pre id="result"></pre>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

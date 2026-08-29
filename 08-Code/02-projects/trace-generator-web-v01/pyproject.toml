@@ -1,0 +1,13 @@
+[project]
+name = "trace-generator-web-v01"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi[standard]",
+    "uvicorn[standard]",
+    "openai",
+    "python-dotenv",
+]
+
+[tool.uv]
+package = false

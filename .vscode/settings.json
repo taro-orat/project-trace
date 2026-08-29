@@ -1,0 +1,9 @@
+{
+  "files.exclude": {
+    "**/.venv": true,
+    "**/pyproject.toml": true,
+    "**/uv.lock": true,
+    "**/__pycache__": true,
+    "**/.DS_Store": true
+  }
+}
