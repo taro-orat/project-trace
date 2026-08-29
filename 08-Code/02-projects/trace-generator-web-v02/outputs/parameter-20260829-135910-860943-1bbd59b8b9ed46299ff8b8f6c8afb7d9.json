@@ -1,0 +1,36 @@
+{
+    "mode": "parameter",
+    "schema_version": "parameter-v1",
+    "input": {
+        "memory": "咖啡渍，，红沙发，女人流淌",
+        "creative_lock": {
+            "source": "user",
+            "items": [
+                "黑裙子"
+            ]
+        },
+        "must_avoid": {
+            "source": "user",
+            "items": [
+                "河流"
+            ]
+        }
+    },
+    "ai_parameters": {
+        "intensity": 0.78,
+        "instability": 0.82,
+        "persistence": 0.7,
+        "distance": 0.58
+    },
+    "human_parameters": {
+        "intensity": 0.78,
+        "instability": 0.82,
+        "persistence": 0.7,
+        "distance": 0.58
+    },
+    "provenance": {
+        "input": "human",
+        "ai_parameters": "ai",
+        "human_parameters": "human_editable_copy"
+    }
+}

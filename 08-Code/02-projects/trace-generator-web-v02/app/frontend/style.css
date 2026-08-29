@@ -1,0 +1,68 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 2rem 1rem;
+  background: #f5f5f5;
+  color: #222;
+  font-family: system-ui, sans-serif;
+}
+
+main {
+  width: min(720px, 100%);
+  margin: 0 auto;
+  padding: 1.5rem;
+  background: #fff;
+}
+
+label,
+select,
+textarea,
+button,
+.hint,
+h2 {
+  display: block;
+  width: 100%;
+}
+
+label {
+  margin-top: 1rem;
+  margin-bottom: 0.4rem;
+  font-weight: 600;
+}
+
+select,
+textarea,
+button {
+  font: inherit;
+  padding: 0.65rem;
+}
+
+textarea {
+  resize: vertical;
+}
+
+.hint {
+  margin: 0.3rem 0 0;
+  color: #666;
+  font-size: 0.9rem;
+}
+
+button {
+  width: auto;
+  margin-top: 1.25rem;
+  cursor: pointer;
+}
+
+h2 {
+  margin-top: 2rem;
+  font-size: 1.1rem;
+}
+
+#result {
+  min-height: 8rem;
+  overflow-x: auto;
+  white-space: pre-wrap;
+}

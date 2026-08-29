@@ -1,0 +1,28 @@
+{
+    "input": {
+        "memory": "咖啡渍，，红沙发，女人流淌",
+        "creative_lock": {
+            "source": "user",
+            "items": [
+                "黑裙子"
+            ]
+        },
+        "must_avoid": {
+            "source": "user",
+            "items": [
+                "河流"
+            ]
+        }
+    },
+    "ai_output": {
+        "emotion": "迟滞而无法挽回的离散感，像一段关系正在无声地褪去。",
+        "trace": "红沙发上留下扩散的咖啡渍，以及黑裙女人消失后仍未干透的湿润轮廓。",
+        "scene": "一名穿黑裙子的女人静坐在红沙发边缘，身体像液体般缓慢向下流淌；她离开后，坐垫上只剩一圈咖啡渍和轻微凹痕。",
+        "visual": "暗红与焦黑色调，单侧冷光切过红沙发和黑裙子，空间空旷、墙面粗粝，咖啡渍的湿亮质感与布料纤维形成对比；构图保持静止、低饱和、超现实而克制。",
+        "movement": "女人的肩线和裙摆逐渐失去稳定形状，沿沙发边缘缓慢下坠；咖啡渍从杯底大小向外扩散，随后运动停滞。",
+        "shot": "使用固定机位的中近景，35mm 镜头，略低角度对准红沙发与穿黑裙子的女人；以长时间静置和轻微焦点漂移捕捉她的流淌与痕迹残留。",
+        "sound": "近距离收录布料摩擦、液体缓慢滴落和沙发内部的细微吱响，背景保持低频室内嗡鸣，间或加入遥远而模糊的呼吸声。",
+        "duration": "建议 12 秒，前 8 秒极慢变化，后 4 秒停留在咖啡渍与沙发凹痕上。",
+        "video_prompt": "A restrained surreal experimental film shot: a woman wearing a black dress sits on the edge of a red sofa in an empty rough-walled room, while her body and dress slowly flow downward like viscous liquid. A coffee stain spreads across the sofa cushion as she fades away, leaving only a damp outline and a shallow indentation. Dark red, charcoal, and muted brown palette, a single cool side light, tactile upholstery fibers, wet reflective coffee stain, static low-angle medium close-up, 35mm lens, subtle focus drift, minimal composition, quiet oppressive atmosphere, slow motion, no river, no waterway imagery."
+    }
+}
