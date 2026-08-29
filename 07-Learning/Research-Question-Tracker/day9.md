@@ -58,15 +58,26 @@ Failed v04 attempts archived for research/reference.
 Next implementation decision:
 rebuild v04 incrementally from v03 with regression checks after every node.
 
-可以。你前面这份不要删，它非常有价值，因为它记录了 **“v04 当时确实失败 → 为什么失败 → 为什么决定 rebuild”** 的研究过程。
-
-现在最适合的是在 `day9.md` 最后追加一个 **Final Addendum｜最终补充**，把后来真正发生的结果补上。尤其要纠正最后那句“v04完全失败”——它是**当时阶段性结论**，后来 rebuild 成功了，所以不能让 Day9 最终记录停在那里。
-
-你可以直接把下面追加到原文最后：
-
----
 
 
+Day 9 Final Technical Result
+
+The first v04 integration failed browser acceptance and was archived as a research experiment.
+
+A new v04 was rebuilt incrementally from the stable behaviour baseline. The final v04 successfully established the Core Behaviour Foundation, including source identity, Distance mapping, Gathering, Ghost, Deepening / Thickness, edge-based Carry Cut, Carry → Merge continuity, Residual, and Persistence.
+
+Fragmentation was removed from the active system after repeated failed experiments. Uncertainty remains deferred.
+
+v04 was then frozen as the reusable Behaviour Foundation.
+
+interactive-trace-v05 was created as the Material & Sensory layer. Human / AI material identity, visual size hierarchy, full-screen distribution, density, Ghost continuity, and interaction regressions were iteratively tested and stabilized.
+
+Stable v05 visual checkpoint:
+
+`f2c5f98 Stabilize v05 visual interaction`
+
+Sound First Pass direction was defined around Human / AI baseline sound, local visual-area presence, spatial pan, and stronger STAYING reverb. Further sound calibration remains open.
+```
 
 
 # Day 9 — Final Addendum｜最终补充（第二天）
@@ -177,21 +188,3 @@ A trace can change its visual, behavioural, and sonic state while remaining reco
 
 
 
-Day 9 Final Technical Result
-
-The first v04 integration failed browser acceptance and was archived as a research experiment.
-
-A new v04 was rebuilt incrementally from the stable behaviour baseline. The final v04 successfully established the Core Behaviour Foundation, including source identity, Distance mapping, Gathering, Ghost, Deepening / Thickness, edge-based Carry Cut, Carry → Merge continuity, Residual, and Persistence.
-
-Fragmentation was removed from the active system after repeated failed experiments. Uncertainty remains deferred.
-
-v04 was then frozen as the reusable Behaviour Foundation.
-
-interactive-trace-v05 was created as the Material & Sensory layer. Human / AI material identity, visual size hierarchy, full-screen distribution, density, Ghost continuity, and interaction regressions were iteratively tested and stabilized.
-
-Stable v05 visual checkpoint:
-
-`f2c5f98 Stabilize v05 visual interaction`
-
-Sound First Pass direction was defined around Human / AI baseline sound, local visual-area presence, spatial pan, and stronger STAYING reverb. Further sound calibration remains open.
-```
