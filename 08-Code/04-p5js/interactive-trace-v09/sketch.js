@@ -126,6 +126,97 @@ let viewerInputInside = false;
 let viewerInputSource = "mouse";
 let viewerInputInitialized = false;
 let lastViewerInputLogTime = 0;
+
+// Day 14 Trace Log v0.2: event-driven observability only.
+const traceLog = [];
+const TRACE_PERFORMANCE_INTERVAL_MS = 5000;
+let traceLogStartedAt = null;
+let lastTraceInputSource = null;
+let lastTracePerformanceSampleAt = 0;
+
+function recordTraceEvent(
+  eventName,
+  details = {}
+) {
+
+  let now = millis();
+
+  if (
+    traceLogStartedAt === null
+    ||
+    eventName === "RUN_START"
+    ||
+    eventName === "TRACE_RESET"
+  ) {
+
+    traceLogStartedAt = now;
+  }
+
+  let event = {
+    elapsedMs: now - traceLogStartedAt,
+    millis: now,
+    frameCount,
+    event: eventName,
+    viewerState,
+    previousViewerState,
+    inputSource: viewerInputSource,
+    viewerX: viewerInputX,
+    viewerY: viewerInputY,
+    viewerSpeed: viewerInputSpeed,
+    stopId: currentStopId,
+    fragments: fragments.length,
+    carried: carriedCountThisFrame,
+    imprints: imprints.length,
+    ...details
+  };
+
+  traceLog.push(event);
+  console.log("[TRACE]", event);
+  return event;
+}
+
+function exportTraceLog() {
+
+  let formatted = JSON.stringify(traceLog, null, 2);
+  console.log("TRACE LOG v0.2", formatted);
+  return formatted;
+}
+
+function clearTraceLog() {
+
+  traceLog.length = 0;
+  traceLogStartedAt = null;
+  lastTraceInputSource = null;
+  lastTracePerformanceSampleAt = 0;
+  recordTraceEvent("TRACE_RESET");
+  return traceLog;
+}
+
+function recordTracePerformanceSample() {
+
+  let now = millis();
+
+  if (
+    now - lastTracePerformanceSampleAt
+    < TRACE_PERFORMANCE_INTERVAL_MS
+  ) {
+
+    return;
+  }
+
+  lastTracePerformanceSampleAt = now;
+
+  recordTraceEvent(
+    "PERFORMANCE_SAMPLE",
+    {
+      frameRate: round(frameRate())
+    }
+  );
+}
+
+window.exportTraceLog = exportTraceLog;
+window.clearTraceLog = clearTraceLog;
+
 const AI_IMAGE_CACHE_MIN_WIDTH = 4;
 const AI_IMAGE_CACHE_MAX_WIDTH = 56;
 const AI_IMAGE_CACHE_STEP = 4;
@@ -3828,6 +3919,22 @@ const SOUND_PAN_LIMIT = 0.6;
 let soundSystem = null;
 let soundUnlockListenerInstalled = false;
 let soundStopReference = null;
+let soundTraceEventRecorded = false;
+
+function recordSoundTraceEvent(
+  eventName
+) {
+
+  if (
+    soundTraceEventRecorded
+  ) {
+
+    return;
+  }
+
+  soundTraceEventRecorded = true;
+  recordTraceEvent(eventName);
+}
 
 
 function createSoundBus(
@@ -3983,6 +4090,7 @@ function unlockSound() {
     soundSystem === null
   ) {
 
+    recordSoundTraceEvent("SOUND_UNAVAILABLE");
     return;
   }
 
@@ -3990,7 +4098,29 @@ function unlockSound() {
     soundSystem.context.state === "suspended"
   ) {
 
-    soundSystem.context.resume();
+    let resumeResult = soundSystem.context.resume();
+
+    if (
+      resumeResult
+      &&
+      typeof resumeResult.then === "function"
+    ) {
+
+      resumeResult.then(
+        () => recordSoundTraceEvent("SOUND_UNLOCKED"),
+        () => recordSoundTraceEvent("SOUND_UNAVAILABLE")
+      );
+    }
+
+    else {
+
+      recordSoundTraceEvent("SOUND_UNLOCKED");
+    }
+  }
+
+  else {
+
+    recordSoundTraceEvent("SOUND_UNLOCKED");
   }
 }
 
@@ -4499,6 +4629,21 @@ function updateViewerInput() {
       viewerInputX,
       viewerInputY
     );
+  }
+
+  if (
+    viewerInputSource !== lastTraceInputSource
+  ) {
+
+    recordTraceEvent(
+      "INPUT_SOURCE_CHANGE",
+      {
+        from: lastTraceInputSource,
+        to: viewerInputSource
+      }
+    );
+
+    lastTraceInputSource = viewerInputSource;
   }
 
   if (
@@ -5449,6 +5594,8 @@ async function setup() {
       }
     );
   }
+
+  recordTraceEvent("RUN_START");
 }
 
 
@@ -5482,6 +5629,8 @@ function draw() {
 
     ambientPerformanceLogged = true;
   }
+
+  recordTracePerformanceSample();
 
 
   previousViewerState =
@@ -8976,6 +9125,13 @@ function initializeIncomingCarryMerge() {
     return;
   }
 
+  recordTraceEvent(
+    "REENTRY_DETECTED",
+    {
+      incomingCarry: incomingCarryFragments.length
+    }
+  );
+
   let clusterAnchor = {
     x:
       stopX
@@ -9112,6 +9268,14 @@ function beginNewStop() {
 
   imprints.push(
     currentImprint
+  );
+
+  recordTraceEvent(
+    "STOP_BEGIN",
+    {
+      selectedHuman: currentStopSelection.humanSourceIds.length,
+      selectedAI: currentStopSelection.aiSourceIds.length
+    }
   );
 }
 
@@ -9554,6 +9718,8 @@ function getCarryEdgeCandidates(
 
 function handleLeaveStop() {
 
+  recordTraceEvent("STOP_LEAVE");
+
   let candidates = [];
 
 
@@ -9625,6 +9791,8 @@ function handleLeaveStop() {
   ) {
 
     currentImprint.freeze();
+
+    recordTraceEvent("RESIDUAL_FROZEN");
 
 
     currentImprint = null;
@@ -10000,6 +10168,19 @@ function handleLeaveStop() {
   // MOST REMAIN
   // =================================================
 
+  if (
+    carryCluster.length > 0
+  ) {
+
+    recordTraceEvent(
+      "CARRY_ASSIGNED",
+      {
+        assigned: carryCluster.length,
+        carried: countCarriedFragments()
+      }
+    );
+  }
+
     for (
       let i = 0;
       i < candidates.length;
@@ -10078,6 +10259,15 @@ function handleLeaveStop() {
 
     carryCount
   );
+
+  recordTraceEvent(
+    "STOP_SUMMARY",
+    {
+      stayedSeconds: Number(actualStaySeconds.toFixed(1)),
+      finalMemorySeconds: Number(memorySeconds.toFixed(1)),
+      assignedCarry: carryCount
+    }
+  );
 }
 
 
@@ -10087,6 +10277,7 @@ function handleLeaveStop() {
 
 function updateViewerState() {
 
+  let stateBefore = viewerState;
   let inside = viewerInputInside;
 
   viewerDX = viewerInputDX;
@@ -10211,6 +10402,19 @@ function updateViewerState() {
 
   viewerWasInside =
     inside;
+
+  if (
+    viewerState !== stateBefore
+  ) {
+
+    recordTraceEvent(
+      "STATE_CHANGE",
+      {
+        from: stateBefore,
+        to: viewerState
+      }
+    );
+  }
 
 
 }
